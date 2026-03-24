@@ -1,0 +1,45 @@
+# ============================================================
+# BuyMe Smart Search — Python dependencies
+# Install: pip install -r requirements.txt
+# After install: playwright install chromium
+# ============================================================
+
+# --- Web scraping (Layer 1) ---
+playwright==1.49.0
+beautifulsoup4==4.12.3
+lxml==5.3.0              # XML parser for sitemaps (bs4 backend)
+httpx==0.28.1            # Async HTTP client (scraper + API)
+tenacity==9.0.0          # Retry logic for scrapers
+
+# --- Database (Layer 3) ---
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0          # Async PostgreSQL driver (runtime)
+alembic==1.14.0          # Schema migrations
+psycopg2-binary==2.9.10  # Sync driver for Alembic CLI only
+
+# --- API (Layer 5) ---
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+pydantic-settings==2.7.0
+
+# --- AI / Normalization (Layer 2) ---
+anthropic==0.40.0
+instructor==1.7.2        # Structured output from Claude (used by normalization pipeline)
+openai==1.58.1           # Embeddings for deduplication + vector search (text-embedding-3-small)
+
+# --- Task queue (Layer 1 scheduler) ---
+celery==5.4.0
+redis==5.2.1
+
+# --- Geolocation (Layer 4) ---
+# PostGIS is a PostgreSQL extension; geoalchemy2 is the ORM wrapper
+geoalchemy2==0.17.1
+
+# --- Utilities ---
+python-dotenv==1.0.1     # Load .env file
+requests==2.32.3         # Sync HTTP (keep for non-async scraper paths)
+
+# --- Testing ---
+pytest==8.3.4
+anyio[trio]==4.7.0       # Async test runner + pytest plugin (pytest.mark.anyio)
