@@ -2,9 +2,9 @@
 tests/conftest.py — Shared pytest fixtures for the FindMe / BuyMe Smart Search test suite.
 
 Fixtures provided:
-    anyio_backend       — Forces anyio to use the asyncio event loop for all async tests.
-    anthropic_client    — A MagicMock standing in for an instructor.AsyncInstructor
-                          instance; prevents real API calls in unit tests.
+    anyio_backend   — Forces anyio to use the asyncio event loop for all async tests.
+    ai_client       — A MagicMock standing in for an instructor.AsyncInstructor
+                      instance; prevents real API calls in unit tests.
 """
 
 import pytest
@@ -25,12 +25,12 @@ def anyio_backend() -> str:
 
 
 @pytest.fixture
-def anthropic_client() -> MagicMock:
+def ai_client() -> MagicMock:
     """Return a MagicMock standing in for an instructor.AsyncInstructor client.
 
-    Prevents any real Anthropic API calls from being made during unit tests.
+    Prevents any real Gemini API calls from being made during unit tests.
     Tests that need specific return values should configure this mock in the
-    test body using ``anthropic_client.create.return_value = ...``.
+    test body using ``ai_client.create.return_value = ...``.
 
     Returns:
         A :class:`unittest.mock.MagicMock` instance.

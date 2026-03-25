@@ -20,8 +20,8 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-# Claude model used for all normalization tasks (fast + cheap for batch processing)
-_CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+# Gemini model used for all normalization tasks (fast + free tier available)
+_GEMINI_MODEL = "gemini-2.0-flash"
 
 _SYSTEM_PROMPT = """\
 You are a product name normalization expert for an Israeli retail catalog.
@@ -85,7 +85,7 @@ class NameNormalizer:
         """Initialize the normalizer with an instructor async client.
 
         Args:
-            client: instructor.AsyncInstructor wrapping anthropic.AsyncAnthropic.
+            client: instructor.AsyncInstructor wrapping an AsyncOpenAI Gemini client.
         """
         self._client = client
 
@@ -107,14 +107,14 @@ class NameNormalizer:
             result: NormalizedName = await self._client.create(
                 response_model=NormalizedName,
                 messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
                     {
                         "role": "user",
                         "content": f"Normalize this product name: {raw_name}",
-                    }
+                    },
                 ],
-                model=_CLAUDE_MODEL,
+                model=_GEMINI_MODEL,
                 max_tokens=512,
-                system=_SYSTEM_PROMPT,
             )
             return result
         except Exception as exc:

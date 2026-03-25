@@ -12,19 +12,26 @@
 
 > **Update this section every session so agents always know where things stand.**
 
-- **Phase:** Week 1–2 — Core implementation complete
-- **Last completed:** All 5 layers scaffolded and implemented; 23 Python files passing syntax checks
-  - Scraper layer: BuyMeStoreScraper, ShopifyDetector, PerStoreScraper, KSPScraper, IvoryScraper, Celery scheduler
-  - Normalization layer: NameNormalizer, CategoryClassifier, SpecExtractor, NormalizationPipeline, DeduplicationEngine
-  - DB layer: SQLAlchemy models (Store, Product, StoreProduct, ScrapeRun), VectorIndex
-  - API layer: FastAPI app with POST /search + GET /stores
-  - Tests scaffold: conftest, scraper/api/normalization test stubs
-- **In progress:** Nothing
-- **Blocked:** Nothing
+- **Phase:** Week 4 — Search live, data pipeline scaling
+- **Last completed (2026-03-25):**
+  - **Shopify scraper** fully run: 182 stores scraped → **128,981 products**, **172,946 store_products**
+  - **Migrations:** 0001–0003 applied (pgvector 768-dim for Gemini `gemini-embedding-001`)
+  - **`POST /search` live** with natural language: free text ("אוזניות של sony") or URL → Gemini embedding → pgvector cosine search → ILIKE fallback
+  - **Embedding pipeline**: `db/embed_products.py` running (priority: most-popular products first); ~990 embedded so far; daily quota throttles Gemini free tier (~1500/day)
+  - **React frontend** scaffolded: 15 files in `frontend/` — Vite + TypeScript + Tailwind + RTL Hebrew; run `cd frontend && npm install && npm run dev`
+  - **`SearchRequest.query`** replaces `url` — accepts both free text and URLs
+  - **WooCommerce scraper** built (`scraper/woocommerce_product_scraper.py`) — most IL stores lock the API (401); sitemap approach needed instead
+  - **Sitemap scraper** in progress (`scraper/sitemap_scraper.py`) — parses WordPress sitemaps + JSON-LD for 1014 skipped stores
+  - **6 skills installed**: `anthropics/skills@frontend-design`, `vercel-labs@web-design-guidelines`, `vercel-labs@vercel-react-best-practices`, `supabase@supabase-postgres-best-practices`, `coreyhaines31@seo-audit`, `anthropics/skills@pdf`
+- **In progress:**
+  - Embedding background process running (PID varies) — restarts at midnight when Gemini quota resets
+  - Sitemap scraper agent building
+- **Blocked:** Gemini free tier: ~1,500 embeddings/day; full 128k embedding takes ~4 days
 - **Next priority:**
-  1. Copy `.env.example` → `.env`, fill in DATABASE_URL + ANTHROPIC_API_KEY + OPENAI_API_KEY
-  2. `alembic init db/migrations` + write initial migration
-  3. `python -m scraper.buyme_store_scraper` to seed stores table
+  1. Run `sitemap_scraper` on 1014 skipped stores to expand product coverage
+  2. `cd frontend && npm install && npm run dev` — first UI demo
+  3. Add `POST /search` filters UI (online_only, city, max_price) to frontend
+  4. Replace ILIKE fallback with hybrid search (vector + keyword) once more embeddings exist
 
 ---
 
@@ -266,3 +273,10 @@ CELERY_BROKER_URL=redis://localhost:6379
 | 7–8 | Vector search + similar product fallback. Location filtering. |
 | 9–10 | Expand to 20+ stores. Scrape scheduler. Admin dashboard. |
 | 11–12 | Polish UI (Hebrew RTL, mobile). Auth + saved searches. Deploy publicly. |
+Read ai-docs/seo-llmo-guide.md for SEO/LLMO practices.
+
+Read ai-docs/aws-spa-deployment-guide.md for AWS SPA deployment.
+
+Read ai-docs/web-accessibility-guide.md for web accessibility (WCAG 2.2).
+
+Read ai-docs/web-performance-guide.md for web performance and Core Web Vitals.

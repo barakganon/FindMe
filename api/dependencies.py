@@ -2,9 +2,9 @@
 api/dependencies.py — FastAPI dependency providers and application settings.
 
 Provides:
-    Settings         — Pydantic BaseSettings loaded from environment variables
-    get_db()         — Async SQLAlchemy session dependency
-    get_anthropic_client() — Anthropic async client dependency
+    Settings       — Pydantic BaseSettings loaded from environment variables
+    get_db()       — Async SQLAlchemy session dependency
+    get_ai_client() — OpenAI-compatible async client pointed at Gemini
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import AsyncGenerator
 
-import anthropic
+from openai import AsyncOpenAI
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://localhost/findme"
 
-    # Claude API
-    anthropic_api_key: str = ""
+    # Gemini API
+    gemini_api_key: str = ""
 
     # CORS — comma-separated list of allowed origins, e.g. "http://localhost:3000,https://app.example.com"
     cors_origins: str = "*"
@@ -103,19 +103,21 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 # ---------------------------------------------------------------------------
-# Anthropic client
+# AI client (Gemini via OpenAI-compatible endpoint)
 # ---------------------------------------------------------------------------
 
+_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
-def get_anthropic_client() -> anthropic.AsyncAnthropic:
+
+def get_ai_client() -> AsyncOpenAI:
     """
-    FastAPI dependency that returns a configured AsyncAnthropic client.
+    FastAPI dependency that returns an AsyncOpenAI client pointed at Gemini.
 
     Usage:
         async def my_route(
-            client: Annotated[anthropic.AsyncAnthropic, Depends(get_anthropic_client)]
+            client: Annotated[AsyncOpenAI, Depends(get_ai_client)]
         ) -> ...:
             ...
     """
     settings = get_settings()
-    return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    return AsyncOpenAI(api_key=settings.gemini_api_key, base_url=_GEMINI_BASE_URL)

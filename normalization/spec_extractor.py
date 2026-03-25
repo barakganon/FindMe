@@ -18,8 +18,8 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-# Claude model used for all spec extraction tasks
-_CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+# Gemini model used for all spec extraction tasks
+_GEMINI_MODEL = "gemini-2.0-flash"
 
 _SYSTEM_PROMPT = """\
 You are a product specification extraction expert for an Israeli retail catalog.
@@ -107,7 +107,7 @@ class SpecExtractor:
         """Initialize the extractor with an instructor async client.
 
         Args:
-            client: instructor.AsyncInstructor wrapping anthropic.AsyncAnthropic.
+            client: instructor.AsyncInstructor wrapping an AsyncOpenAI Gemini client.
         """
         self._client = client
 
@@ -129,14 +129,14 @@ class SpecExtractor:
             result: ExtractedSpecs = await self._client.create(
                 response_model=ExtractedSpecs,
                 messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
                     {
                         "role": "user",
                         "content": f"Extract specifications from this product text:\n\n{raw_text}",
-                    }
+                    },
                 ],
-                model=_CLAUDE_MODEL,
+                model=_GEMINI_MODEL,
                 max_tokens=1024,
-                system=_SYSTEM_PROMPT,
             )
             return result
         except Exception as exc:

@@ -24,9 +24,8 @@ pydantic==2.10.3
 pydantic-settings==2.7.0
 
 # --- AI / Normalization (Layer 2) ---
-anthropic==0.40.0
-instructor==1.7.2        # Structured output from Claude (used by normalization pipeline)
-openai==1.58.1           # Embeddings for deduplication + vector search (text-embedding-3-small)
+instructor==1.7.2        # Structured output from Gemini (used by normalization pipeline)
+openai==1.58.1           # Gemini OpenAI-compat client + embeddings for deduplication
 
 # --- Task queue (Layer 1 scheduler) ---
 celery==5.4.0

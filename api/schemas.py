@@ -32,16 +32,16 @@ class SearchFilters(BaseModel):
     city: Optional[str] = Field(None, description="Filter results to a specific city (Hebrew or English)")
     location: Optional[LocationFilter] = Field(None, description="Geographic radius filter")
     max_price: Optional[float] = Field(None, ge=0.0, description="Maximum product price in ILS")
-    min_match_score: float = Field(0.5, ge=0.0, le=1.0, description="Minimum similarity score (0.0–1.0)")
+    min_match_score: float = Field(0.3, ge=0.0, le=1.0, description="Minimum similarity score (0.0–1.0)")
 
 
 class SearchRequest(BaseModel):
-    """Search request payload — the user submits any product URL."""
+    """Search request payload — free text query or product URL."""
 
-    url: str = Field(
+    query: str = Field(
         ...,
-        description="Any product URL (Amazon IL, KSP, Zap, iHerb, etc.)",
-        examples=["https://www.ksp.co.il/web/cat/product/1234"],
+        description="Free text product search (e.g. 'אוזניות sony') or any product URL",
+        examples=["אוזניות של sony", "https://www.ksp.co.il/web/cat/product/1234"],
     )
     filters: SearchFilters = Field(
         default_factory=SearchFilters,
@@ -93,9 +93,9 @@ class ProductResult(BaseModel):
 
 
 class QueryProduct(BaseModel):
-    """The product we extracted from the user's submitted URL."""
+    """The product we extracted from the user's query (URL or free text)."""
 
-    raw_url: str = Field(..., description="The original URL submitted by the user")
+    raw_query: str = Field(..., description="The original query submitted by the user")
     extracted_name: Optional[str] = Field(None, description="Product name extracted by Claude")
     brand: Optional[str] = Field(None, description="Brand extracted by Claude")
     estimated_price: Optional[float] = Field(None, description="Estimated price from the source page")

@@ -6,7 +6,7 @@ async pipeline that transforms a raw scraped product into a clean NormalizedProd
 ready for insertion into the products table.
 
 Usage example:
-    pipeline = NormalizationPipeline(anthropic_api_key="sk-ant-...")
+    pipeline = NormalizationPipeline(gemini_api_key="AIza...")
     product = await pipeline.process_product(
         raw_name="Sony WH1000XM5 אוזניות אלחוטיות",
         raw_description="אוזניות over-ear עם ביטול רעשים אקטיבי, צבע שחור, 30 שעות סוללה",
@@ -18,8 +18,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-import anthropic
 import instructor
+from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 from normalization.category_classifier import CategoryClassifier, ClassifiedCategory
@@ -29,22 +29,24 @@ from normalization.spec_extractor import ExtractedSpecs, SpecExtractor
 logger = logging.getLogger(__name__)
 
 
+_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+
 def get_instructor_client(api_key: str) -> instructor.AsyncInstructor:
-    """Create an async instructor client wrapping the Anthropic AsyncAnthropic API.
+    """Create an async instructor client using Gemini's OpenAI-compatible endpoint.
 
     This is the canonical factory function for creating the client used by all
     normalization components. Always use this instead of constructing the client
     manually.
 
     Args:
-        api_key: The Anthropic API key (from ANTHROPIC_API_KEY env var).
+        api_key: The Gemini API key (from GEMINI_API_KEY env var).
 
     Returns:
-        An instructor.AsyncInstructor configured to use Anthropic's tool-calling
-        mode for structured output.
+        An instructor.AsyncInstructor configured for Gemini via OpenAI-compat mode.
     """
-    raw_client = anthropic.AsyncAnthropic(api_key=api_key)
-    return instructor.from_anthropic(raw_client)
+    raw_client = AsyncOpenAI(api_key=api_key, base_url=_GEMINI_BASE_URL)
+    return instructor.from_openai(raw_client)
 
 
 class NormalizedProduct(BaseModel):
@@ -156,22 +158,22 @@ class NormalizationPipeline:
     """End-to-end normalization pipeline for raw scraped product data.
 
     Wires together NameNormalizer, CategoryClassifier, and SpecExtractor.
-    All three Claude calls are run concurrently (via asyncio.gather) to minimize
+    All three Gemini calls are run concurrently (via asyncio.gather) to minimize
     latency. The results are merged into a single NormalizedProduct.
 
     Args:
-        anthropic_api_key: The Anthropic API key. Typically read from the
-            ANTHROPIC_API_KEY environment variable by the caller.
+        gemini_api_key: The Gemini API key. Typically read from the
+            GEMINI_API_KEY environment variable by the caller.
     """
 
-    def __init__(self, anthropic_api_key: str) -> None:
+    def __init__(self, gemini_api_key: str) -> None:
         """Initialize the pipeline and all component normalizers.
 
         Args:
-            anthropic_api_key: Anthropic API key for creating the instructor client.
+            gemini_api_key: Gemini API key for creating the instructor client.
         """
         self._client: instructor.AsyncInstructor = get_instructor_client(
-            anthropic_api_key
+            gemini_api_key
         )
         self._name_normalizer = NameNormalizer(self._client)
         self._category_classifier = CategoryClassifier(self._client)
