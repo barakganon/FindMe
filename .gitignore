@@ -1,0 +1,33 @@
+# Secrets — never commit
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+
+# Scraped data (can be large)
+scraper/data/raw/
+scraper/data/processed/
+data/raw/
+data/processed/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Alembic
+db/migrations/versions/*.pyc
+
+# Logs
+*.log
+nohup.out
