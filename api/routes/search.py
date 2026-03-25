@@ -190,30 +190,33 @@ async def search_products(
     if embedding:
         vec_str = _vec_literal(embedding)
         sql = text("""
-            SELECT
-                sp.id            AS sp_id,
-                sp.price,
-                sp.currency,
-                sp.availability,
-                sp.product_url,
-                p.id             AS product_id,
-                p.canonical_name,
-                p.brand          AS product_brand,
-                p.category_path,
-                s.id             AS store_id,
-                s.name_he,
-                s.name_en,
-                s.buyme_url,
-                s.is_online,
-                s.city,
-                s.lat,
-                s.lng,
-                1 - (p.embedding_vector <=> CAST(:vec AS vector)) AS similarity
-            FROM store_products sp
-            JOIN products p ON sp.product_id = p.id
-            JOIN stores s ON sp.store_id = s.id
-            WHERE p.embedding_vector IS NOT NULL
-            ORDER BY p.embedding_vector <=> CAST(:vec AS vector)
+            SELECT * FROM (
+                SELECT DISTINCT ON (sp.product_id, sp.store_id)
+                    sp.id            AS sp_id,
+                    sp.price,
+                    sp.currency,
+                    sp.availability,
+                    sp.product_url,
+                    p.id             AS product_id,
+                    p.canonical_name,
+                    p.brand          AS product_brand,
+                    p.category_path,
+                    s.id             AS store_id,
+                    s.name_he,
+                    s.name_en,
+                    s.buyme_url,
+                    s.is_online,
+                    s.city,
+                    s.lat,
+                    s.lng,
+                    1 - (p.embedding_vector <=> CAST(:vec AS vector)) AS similarity
+                FROM store_products sp
+                JOIN products p ON sp.product_id = p.id
+                JOIN stores s ON sp.store_id = s.id
+                WHERE p.embedding_vector IS NOT NULL
+                ORDER BY sp.product_id, sp.store_id, p.embedding_vector <=> CAST(:vec AS vector)
+            ) deduped
+            ORDER BY similarity DESC
             LIMIT :limit
         """)
         result = await db.execute(sql, {"vec": vec_str, "limit": _MAX_RESULTS * 3})
@@ -226,7 +229,7 @@ async def search_products(
     if not embedding:
         # ILIKE fallback
         sql = text("""
-            SELECT
+            SELECT DISTINCT ON (sp.product_id, sp.store_id)
                 sp.id            AS sp_id,
                 sp.price,
                 sp.currency,
@@ -248,6 +251,7 @@ async def search_products(
             JOIN products p ON sp.product_id = p.id
             JOIN stores s ON sp.store_id = s.id
             WHERE p.canonical_name ILIKE :term
+            ORDER BY sp.product_id, sp.store_id
             LIMIT :limit
         """)
         result = await db.execute(

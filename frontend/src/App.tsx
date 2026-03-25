@@ -1,20 +1,27 @@
 import { useState } from 'react'
 import { SearchBox } from './components/SearchBox'
+import { FilterBar } from './components/FilterBar'
 import { ResultCard } from './components/ResultCard'
 import { StoreMap } from './components/StoreMap'
 import { searchProduct } from './api'
-import type { SearchResponse } from './types'
+import type { SearchFilters, SearchResponse } from './types'
 
 export default function App() {
   const [loading, setLoading] = useState(false)
   const [response, setResponse] = useState<SearchResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [filters, setFilters] = useState<SearchFilters>({
+    online_only: false,
+    max_price: null,
+    city: null,
+    min_match_score: 0.3,
+  })
 
   const handleSearch = async (query: string) => {
     setLoading(true)
     setError(null)
     try {
-      const data = await searchProduct(query)
+      const data = await searchProduct(query, filters)
       setResponse(data)
     } catch (e) {
       setError('שגיאה בחיפוש. נסה שנית.')
@@ -22,6 +29,14 @@ export default function App() {
       setLoading(false)
     }
   }
+
+  const activeFilterSummary = [
+    filters.online_only ? 'אונליין בלבד' : null,
+    filters.max_price != null ? `עד ₪${filters.max_price}` : null,
+    filters.city ? `עיר: ${filters.city}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white" dir="rtl">
@@ -43,6 +58,7 @@ export default function App() {
         </div>
 
         <SearchBox onSearch={handleSearch} loading={loading} />
+        <FilterBar filters={filters} onChange={setFilters} />
 
         {error && (
           <p className="text-center text-red-500 mt-6">{error}</p>
@@ -52,8 +68,13 @@ export default function App() {
           <div className="mt-8 space-y-6">
             <div className="text-center">
               <p className="text-gray-600">
-                נמצאו <strong>{response.total}</strong> תוצאות עבור{' '}
+                נמצאו{' '}
+                <strong>{response.total}</strong>{' '}
+                תוצאות עבור{' '}
                 <strong>{response.query_product.extracted_name ?? response.query_product.raw_query}</strong>
+                {activeFilterSummary && (
+                  <span className="ml-2 text-sm text-blue-600">({activeFilterSummary})</span>
+                )}
               </p>
             </div>
 

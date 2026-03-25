@@ -442,7 +442,7 @@ async def mark_store_success(
     await conn.execute(
         """
         UPDATE stores
-        SET scrape_status   = 'success',
+        SET scrape_status   = 'done',
             last_scraped_at = now(),
             scrape_error    = NULL,
             updated_at      = now()
@@ -676,7 +676,7 @@ async def scrape_store(
     await insert_scrape_run(
         conn=conn,
         store_id=store_id,
-        status="success",
+        status="done",
         items_scraped=len(raw_products),
         items_new=items_new,
         items_updated=items_updated,

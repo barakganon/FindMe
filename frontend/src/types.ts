@@ -1,3 +1,10 @@
+export interface SearchFilters {
+  online_only: boolean
+  max_price: number | null
+  city: string | null
+  min_match_score: number
+}
+
 export interface SearchResult {
   store_name: string
   store_id: string
