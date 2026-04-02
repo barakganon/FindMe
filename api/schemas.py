@@ -182,3 +182,90 @@ class StoreSearchResponse(BaseModel):
     total_available: int = Field(..., ge=0, description="Total matching stores across all pages")
     page: int = Field(..., ge=1, description="Current page number (1-indexed)")
     page_size: int = Field(..., ge=1, description="Results per page")
+
+
+# ---------------------------------------------------------------------------
+# Conversational chat  (LLM-powered unified search)
+# READ-ONLY after Phase 1 — all agents build against this contract
+# ---------------------------------------------------------------------------
+
+
+class ChatMessage(BaseModel):
+    """A single turn in the conversation history."""
+
+    role: str = Field(..., description="'user' or 'assistant'")
+    content: str = Field(..., description="Message text (Hebrew or English)")
+
+
+class SessionContext(BaseModel):
+    """Client-side session state — location and voucher network.
+    Never stored in DB; passed by the frontend with every request."""
+
+    user_lat: Optional[float] = Field(None, description="GPS latitude if already acquired")
+    user_lng: Optional[float] = Field(None, description="GPS longitude if already acquired")
+    location_label: Optional[str] = Field(
+        None, description="Human-readable location label, e.g. 'תל אביב מרכז'"
+    )
+    voucher_network: str = Field("buyme", description="Active voucher network")
+
+
+class ParsedIntent(BaseModel):
+    """Structured intent extracted from the user message by the intent parser LLM."""
+
+    intent: str = Field(
+        ...,
+        description="'product_search' | 'store_search' | 'help' | 'clarify'",
+    )
+    product_query: Optional[str] = Field(None, description="Product name or keywords")
+    brand: Optional[str] = Field(None, description="Brand / manufacturer name")
+    max_price: Optional[float] = Field(None, description="Maximum price in ILS")
+    city: Optional[str] = Field(None, description="City name in Hebrew")
+    location_hint: Optional[str] = Field(
+        None, description="Place name or address mentioned by user"
+    )
+    needs_user_location: bool = Field(
+        False,
+        description="True when user said 'לידי' / 'באזור שלי' but no GPS is available",
+    )
+    store_type: Optional[str] = Field(
+        None, description="'restaurant' | 'retail' | None for all"
+    )
+    voucher_network: str = Field("buyme", description="Voucher network (default: buyme)")
+
+
+class ChatRequest(BaseModel):
+    """Request payload for POST /api/chat."""
+
+    message: str = Field(..., description="User's free-text message (Hebrew or English)")
+    history: list[ChatMessage] = Field(
+        default_factory=list,
+        description="Previous conversation turns for context",
+    )
+    session_context: Optional[SessionContext] = Field(
+        None, description="Client-side session state (location, voucher network)"
+    )
+    voucher_network: str = Field("buyme", description="Active voucher network")
+
+
+class ChatResponse(BaseModel):
+    """Response payload for POST /api/chat."""
+
+    message: str = Field(..., description="Hebrew natural-language answer")
+    intent: str = Field(
+        ..., description="'product_search' | 'store_search' | 'help' | 'clarify'"
+    )
+    product_results: Optional[list[ProductResult]] = Field(
+        None, description="Matched products (when intent=product_search)"
+    )
+    store_results: Optional[list[StoreResult]] = Field(
+        None, description="Matched stores (when intent=store_search)"
+    )
+    needs_location: bool = Field(
+        False,
+        description="True when GPS is required but unavailable — frontend should prompt",
+    )
+    location_prompt: Optional[str] = Field(
+        None, description="Hebrew question to ask the user for their location"
+    )
+    voucher_network: str = Field("buyme", description="Voucher network used for this response")
+    search_time_ms: float = Field(0.0, ge=0.0, description="Total server-side time in ms")

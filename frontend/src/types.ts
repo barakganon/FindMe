@@ -83,3 +83,26 @@ export interface SearchResponse {
   similar_matches: number
   search_time_ms: number
 }
+
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface SessionContext {
+  user_lat: number | null
+  user_lng: number | null
+  location_label: string | null
+  voucher_network: string
+}
+
+export interface ChatResponse {
+  message: string
+  intent: 'product_search' | 'store_search' | 'help' | 'clarify'
+  product_results: ProductResult[] | null
+  store_results: StoreResult[] | null
+  needs_location: boolean
+  location_prompt: string | null
+  voucher_network: string
+  search_time_ms: number
+}

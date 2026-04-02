@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.dependencies import get_settings
-from api.routes import search, stores
+from api.routes import chat, search, stores
 
 # ---------------------------------------------------------------------------
 # Application
@@ -63,6 +63,7 @@ app.add_middleware(
 
 app.include_router(search.router, tags=["Search"])
 app.include_router(stores.router, tags=["Stores"])
+app.include_router(chat.router, prefix="/api", tags=["Chat"])
 
 # ---------------------------------------------------------------------------
 # Health check

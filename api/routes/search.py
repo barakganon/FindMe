@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_GEMINI_MODEL = "gemini-2.0-flash"
+_GEMINI_MODEL = "gemini-2.5-flash"
 _EMBEDDING_MODEL = "text-embedding-004"  # Gemini, 768 dims
 _HTTP_TIMEOUT = 10.0
 _MAX_CANDIDATES = 200  # max filter-passing results to collect before pagination

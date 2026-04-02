@@ -4,6 +4,7 @@ import { FilterBar } from './components/FilterBar'
 import { ResultCard } from './components/ResultCard'
 import { StoreCard } from './components/StoreCard'
 import { StoreMap } from './components/StoreMap'
+import { ChatInterface } from './components/ChatInterface'
 import { searchProduct, searchStores, geocodeAddress } from './api'
 import type {
   SearchFilters,
@@ -12,7 +13,7 @@ import type {
   StoreResult,
 } from './types'
 
-type Tab = 'product' | 'stores'
+type Tab = 'product' | 'stores' | 'chat'
 type LocationMode = 'gps' | 'address'
 
 export default function App() {
@@ -203,6 +204,16 @@ export default function App() {
             >
               חנויות בקרבת מקום
             </button>
+            <button
+              onClick={() => setActiveTab('chat')}
+              className={`px-6 py-2.5 text-sm font-medium transition-colors ${
+                activeTab === 'chat'
+                  ? 'bg-blue-600 text-white'
+                  : 'text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              💬 שיחה
+            </button>
           </div>
         </div>
 
@@ -295,6 +306,13 @@ export default function App() {
               </div>
             )}
           </>
+        )}
+
+        {/* ══════════════════════════════════════════════════════════════════
+            TAB 3 — Chat interface
+        ══════════════════════════════════════════════════════════════════ */}
+        {activeTab === 'chat' && (
+          <ChatInterface />
         )}
 
         {/* ══════════════════════════════════════════════════════════════════
