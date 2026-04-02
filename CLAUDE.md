@@ -12,26 +12,32 @@
 
 > **Update this section every session so agents always know where things stand.**
 
-- **Phase:** Week 4 — Search live, data pipeline scaling
-- **Last completed (2026-03-25):**
-  - **Shopify scraper** fully run: 182 stores scraped → **128,981 products**, **172,946 store_products**
-  - **Migrations:** 0001–0003 applied (pgvector 768-dim for Gemini `gemini-embedding-001`)
-  - **`POST /search` live** with natural language: free text ("אוזניות של sony") or URL → Gemini embedding → pgvector cosine search → ILIKE fallback
-  - **Embedding pipeline**: `db/embed_products.py` running (priority: most-popular products first); ~990 embedded so far; daily quota throttles Gemini free tier (~1500/day)
-  - **React frontend** scaffolded: 15 files in `frontend/` — Vite + TypeScript + Tailwind + RTL Hebrew; run `cd frontend && npm install && npm run dev`
-  - **`SearchRequest.query`** replaces `url` — accepts both free text and URLs
-  - **WooCommerce scraper** built (`scraper/woocommerce_product_scraper.py`) — most IL stores lock the API (401); sitemap approach needed instead
-  - **Sitemap scraper** in progress (`scraper/sitemap_scraper.py`) — parses WordPress sitemaps + JSON-LD for 1014 skipped stores
-  - **6 skills installed**: `anthropics/skills@frontend-design`, `vercel-labs@web-design-guidelines`, `vercel-labs@vercel-react-best-practices`, `supabase@supabase-postgres-best-practices`, `coreyhaines31@seo-audit`, `anthropics/skills@pdf`
+- **Phase:** Week 4 — Electronics focus, search quality improvements
+- **Last completed (2026-04-01):**
+  - **Electronics strategy**: Identified key electronics/appliances BuyMe stores: CrypTech (7,846 products), Intech (593), Alltech (245), ליאור מוצרי חשמל (228+)
+  - **Sitemap scraper fixes**: (1) JSON-LD `@graph` support (Yoast SEO WooCommerce pattern), (2) processes ALL product sitemaps (not just first), (3) increased cap to 2,000 URLs/store
+  - **Frontend type fix**: `SearchResult` → `ProductResult` with nested `StoreInfo` — ResultCard now shows correct fields, StoreMap uses `store.lat/lng`
+  - **Search improvements**: ILIKE fallback now searches brand + canonical_name, deduplicates by (product_id, store_id), sorted by word-overlap score
+  - **API schema**: Added `lat`/`lng` to `StoreInfo` response for map display
+  - **Embed script**: Added `--store-id` flag to prioritize embedding per store; 4 embed processes running in background
+  - **DB stats**: 134,036 products, 179,487 store_products, 2,070 embedded (1.5%), 426 stores geocoded
 - **In progress:**
-  - Embedding background process running (PID varies) — restarts at midnight when Gemini quota resets
-  - Sitemap scraper agent building
-- **Blocked:** Gemini free tier: ~1,500 embeddings/day; full 128k embedding takes ~4 days
+  - CrypTech embedding: ~980/7,846 (background, throttled by Gemini free tier)
+  - ליאור מוצרי חשמל re-scraping with @graph fix + all-sitemaps support
+  - Alltech re-scraping for full catalog
+- **Blocked:** Gemini free tier ~1,500 requests/day; 4 parallel embed processes may hit daily quota; consider upgrading Gemini plan
+- **Electronics stores confirmed** (BuyMe partners):
+  - CrypTech (7,846): computers, GPUs, peripherals, networking
+  - Intech (593): tech accessories
+  - Alltech (245): measurement/science tools
+  - ליאור מוצרי חשמל (2,500+ URLs): home appliances (refrigerators, dishwashers, BBQ)
+  - Note: KSP, iDigital, Bug are NOT BuyMe partners
+- **Restaurants/fashion/hotels**: Keep geocoding for location filter; skip product scraping
 - **Next priority:**
-  1. Run `sitemap_scraper` on 1014 skipped stores to expand product coverage
-  2. `cd frontend && npm install && npm run dev` — first UI demo
-  3. Add `POST /search` filters UI (online_only, city, max_price) to frontend
-  4. Replace ILIKE fallback with hybrid search (vector + keyword) once more embeddings exist
+  1. Wait for CrypTech embedding to complete (7,846 → full semantic coverage for electronics)
+  2. Re-run geocoding for ungeocoded stores (improve location filtering)
+  3. Add pagination to frontend (currently limited to 20 results)
+  4. Consider Gemini paid tier for faster embedding throughput
 
 ---
 

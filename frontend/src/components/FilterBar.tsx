@@ -49,10 +49,23 @@ export function FilterBar({ filters, onChange }: Props) {
         />
       </div>
 
+      {/* Brand filter */}
+      <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2">
+        <span className="text-gray-500">מותג:</span>
+        <input
+          type="text"
+          placeholder="למשל: Samsung, Bosch..."
+          value={filters.brand ?? ''}
+          onChange={(e) => onChange({ ...filters, brand: e.target.value || null })}
+          className="w-32 outline-none text-gray-700 text-right"
+          dir="rtl"
+        />
+      </div>
+
       {/* Clear filters */}
-      {(filters.online_only || filters.max_price != null || filters.city) && (
+      {(filters.online_only || filters.max_price != null || filters.city || filters.brand) && (
         <button
-          onClick={() => onChange({ online_only: false, max_price: null, city: null, min_match_score: 0.3 })}
+          onClick={() => onChange({ online_only: false, max_price: null, city: null, brand: null, min_match_score: 0.3 })}
           className="text-gray-400 hover:text-red-500 transition-colors px-2"
         >
           ✕ נקה פילטרים

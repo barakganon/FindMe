@@ -3,22 +3,34 @@ export interface SearchFilters {
   max_price: number | null
   city: string | null
   min_match_score: number
+  brand: string | null
+  page: number
+  page_size: number
 }
 
-export interface SearchResult {
-  store_name: string
-  store_id: string
-  product_name: string
+export interface StoreInfo {
+  id: string
+  name_he: string
+  name_en: string | null
+  buyme_url: string | null
+  is_online: boolean
+  city: string | null
+  lat: number | null
+  lng: number | null
+  distance_km: number | null
+}
+
+export interface ProductResult {
+  product_id: string
+  canonical_name: string
+  brand: string | null
+  category_path: string | null
+  store: StoreInfo
   price: number | null
   currency: string
   availability: boolean
-  product_url: string
-  store_url: string | null
-  city: string | null
-  is_online: boolean
-  lat: number | null
-  lng: number | null
-  similarity_score: number
+  product_url: string | null
+  match_score: number
 }
 
 export interface QueryProduct {
@@ -30,19 +42,13 @@ export interface QueryProduct {
 }
 
 export interface SearchResponse {
-  results: SearchResult[]
+  results: ProductResult[]
   query_product: QueryProduct
   total: number
+  total_available: number
+  page: number
+  page_size: number
   exact_matches: number
   similar_matches: number
   search_time_ms: number
-}
-
-export interface Store {
-  id: string
-  name_he: string
-  buyme_category: string
-  is_online: boolean
-  city: string | null
-  store_url: string | null
 }

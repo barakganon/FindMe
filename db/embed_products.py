@@ -28,8 +28,8 @@ _GEMINI_EMBED_URL = (
     "gemini-embedding-001:batchEmbedContents"
 )
 _EMBED_DIMS = 768
-_DEFAULT_BATCH = 20      # smaller batches to stay under rate limits
-_BATCH_DELAY = 2.5       # seconds between batches (~15 req/min on free tier)
+_DEFAULT_BATCH = 100     # paid tier: up to 100 items per batchEmbedContents call
+_BATCH_DELAY = 0.1       # paid tier: 1,500 RPM → ~0.04s min; 0.1s is safe
 _MAX_RETRIES = 5
 
 
@@ -81,7 +81,11 @@ async def _batch_embed(texts: list[str], api_key: str) -> list[list[float]] | No
     return None
 
 
-async def embed_products(batch_size: int = _DEFAULT_BATCH, limit: int | None = None) -> None:
+async def embed_products(
+    batch_size: int = _DEFAULT_BATCH,
+    limit: int | None = None,
+    store_id: str | None = None,
+) -> None:
     db_url = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
     gemini_key = os.getenv("GEMINI_API_KEY", "")
 
@@ -91,17 +95,30 @@ async def embed_products(batch_size: int = _DEFAULT_BATCH, limit: int | None = N
     conn = await asyncpg.connect(db_url)
 
     try:
-        q = """
-            SELECT p.id, p.canonical_name, p.brand
-            FROM products p
-            LEFT JOIN store_products sp ON p.id = sp.product_id
-            WHERE p.embedding_vector IS NULL
-            GROUP BY p.id, p.canonical_name, p.brand
-            ORDER BY COUNT(sp.id) DESC
-        """
-        if limit:
-            q += f" LIMIT {limit}"
-        rows = await conn.fetch(q)
+        if store_id:
+            q = """
+                SELECT DISTINCT p.id, p.canonical_name, p.brand
+                FROM products p
+                JOIN store_products sp ON p.id = sp.product_id
+                WHERE p.embedding_vector IS NULL
+                AND sp.store_id = $1::uuid
+                ORDER BY p.id
+            """
+            if limit:
+                q += f" LIMIT {limit}"
+            rows = await conn.fetch(q, store_id)
+        else:
+            q = """
+                SELECT p.id, p.canonical_name, p.brand
+                FROM products p
+                LEFT JOIN store_products sp ON p.id = sp.product_id
+                WHERE p.embedding_vector IS NULL
+                GROUP BY p.id, p.canonical_name, p.brand
+                ORDER BY COUNT(sp.id) DESC
+            """
+            if limit:
+                q += f" LIMIT {limit}"
+            rows = await conn.fetch(q)
         total = len(rows)
         logger.info("Found %d products needing embeddings", total)
 
@@ -150,5 +167,6 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--batch-size", type=int, default=_DEFAULT_BATCH)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--store-id", type=str, default=None, help="Only embed products for this store UUID")
     args = parser.parse_args()
-    asyncio.run(embed_products(batch_size=args.batch_size, limit=args.limit))
+    asyncio.run(embed_products(batch_size=args.batch_size, limit=args.limit, store_id=args.store_id))

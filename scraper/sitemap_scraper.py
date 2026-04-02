@@ -83,7 +83,7 @@ _DB_URL: str = _DEFAULT_DB_URL.replace("postgresql+asyncpg://", "postgresql://")
 )
 
 # Maximum product URLs to process per store (avoids overwhelming large stores)
-_MAX_PRODUCT_URLS: int = 500
+_MAX_PRODUCT_URLS: int = 2000
 
 # Maximum concurrent product-page fetches within a single store
 _PRODUCT_CONCURRENCY: int = 5
@@ -243,26 +243,26 @@ def _is_sitemap_index(xml_text: str) -> bool:
     return "<sitemapindex" in xml_text
 
 
-def find_product_sitemap_url(xml_text: str) -> Optional[str]:
+def find_all_product_sitemap_urls(xml_text: str) -> list[str]:
     """
-    From a sitemap-index XML, find the child sitemap whose ``<loc>`` URL
-    suggests it contains product pages.
-
-    Looks for URLs containing ``product`` (case-insensitive) in the path.
+    From a sitemap-index XML, find ALL child sitemaps whose ``<loc>`` URL
+    suggests they contain product pages (e.g. product-sitemap.xml,
+    product-sitemap2.xml, ...).
 
     Args:
         xml_text: Raw XML text of the sitemap index.
 
     Returns:
-        URL of the product child sitemap, or ``None`` if not found.
+        List of product child sitemap URLs (may be empty).
     """
     locs = _parse_sitemap_locs(xml_text)
+    found = []
     for loc in locs:
         lower = loc.lower()
         if any(hint in lower for hint in _PRODUCT_SITEMAP_HINTS):
             logger.debug("Found product sitemap: %s", loc)
-            return loc
-    return None
+            found.append(loc)
+    return found
 
 
 async def fetch_product_urls(
@@ -272,9 +272,10 @@ async def fetch_product_urls(
     """
     Resolve ``sitemap_url`` to a flat list of product page URLs.
 
-    If ``sitemap_url`` is a sitemap index, this function drills into the
-    product child sitemap.  If it is already a URL list sitemap, URLs are
-    extracted directly.  Returns at most ``_MAX_PRODUCT_URLS`` entries.
+    If ``sitemap_url`` is a sitemap index, this function drills into ALL
+    product child sitemaps to collect URLs.  If it is already a URL list
+    sitemap, URLs are extracted directly.  Returns at most
+    ``_MAX_PRODUCT_URLS`` entries.
 
     Args:
         client:      Shared HTTP client.
@@ -288,19 +289,21 @@ async def fetch_product_urls(
         logger.debug("Empty response for sitemap: %s", sitemap_url)
         return []
 
-    # If this is a sitemap index, find the product child sitemap and recurse
     if _is_sitemap_index(text):
-        product_sitemap_url = find_product_sitemap_url(text)
-        if not product_sitemap_url:
+        # Collect ALL product sitemaps (product-sitemap.xml, product-sitemap2.xml, ...)
+        product_sitemap_urls = find_all_product_sitemap_urls(text)
+        if not product_sitemap_urls:
             logger.debug("No product sitemap found in index: %s", sitemap_url)
             return []
-        # Fetch the actual product sitemap
-        product_text = await fetch_html(client, product_sitemap_url)
-        if not product_text:
-            return []
-        urls = _parse_sitemap_locs(product_text)
+        all_urls: list[str] = []
+        for ps_url in product_sitemap_urls:
+            if len(all_urls) >= _MAX_PRODUCT_URLS:
+                break
+            product_text = await fetch_html(client, ps_url)
+            if product_text:
+                all_urls.extend(_parse_sitemap_locs(product_text))
+        urls = all_urls
     else:
-        # Might itself be the product sitemap (direct URL list)
         urls = _parse_sitemap_locs(text)
 
     logger.debug("Found %d URLs in sitemap (before cap)", len(urls))
@@ -312,12 +315,24 @@ async def fetch_product_urls(
 # ---------------------------------------------------------------------------
 
 
+def _type_is_product(type_val: Any) -> bool:
+    """Return True if a JSON-LD @type value refers to a Product."""
+    if isinstance(type_val, str):
+        return type_val.lower() == "product"
+    if isinstance(type_val, list):
+        return any(isinstance(t, str) and t.lower() == "product" for t in type_val)
+    return False
+
+
 def extract_json_ld(html: str) -> Optional[dict[str, Any]]:
     """
     Parse HTML and return the first JSON-LD block whose ``@type`` is
     ``Product`` (case-insensitive).
 
-    Handles both single-object and list-of-objects JSON-LD payloads.
+    Handles:
+    - Single-object and list-of-objects JSON-LD payloads
+    - ``@graph`` arrays (Yoast SEO / WooCommerce pattern)
+    - ``@type`` as a string or list of strings
 
     Args:
         html: Raw HTML text of a product page.
@@ -329,10 +344,18 @@ def extract_json_ld(html: str) -> Optional[dict[str, Any]]:
     for tag in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(tag.string or "")
+            # Flatten: handle top-level list or single object
             items: list[Any] = data if isinstance(data, list) else [data]
             for item in items:
-                if isinstance(item, dict) and item.get("@type", "").lower() == "product":
+                if not isinstance(item, dict):
+                    continue
+                # Direct @type: Product
+                if _type_is_product(item.get("@type", "")):
                     return item
+                # @graph pattern (Yoast SEO wraps everything in @graph)
+                for graph_item in item.get("@graph", []):
+                    if isinstance(graph_item, dict) and _type_is_product(graph_item.get("@type", "")):
+                        return graph_item
         except Exception:
             continue
     return None
@@ -721,7 +744,11 @@ async def _fetch_and_parse_product(
     html = await fetch_html(client, url)
     if not html:
         return None
-    json_ld = extract_json_ld(html)
+    try:
+        json_ld = extract_json_ld(html)
+    except Exception as exc:
+        logger.debug("JSON-LD parse error for %s: %s", url, exc)
+        return None
     if json_ld is None:
         logger.debug("No JSON-LD Product found at %s", url)
         return None

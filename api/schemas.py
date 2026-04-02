@@ -33,6 +33,9 @@ class SearchFilters(BaseModel):
     location: Optional[LocationFilter] = Field(None, description="Geographic radius filter")
     max_price: Optional[float] = Field(None, ge=0.0, description="Maximum product price in ILS")
     min_match_score: float = Field(0.3, ge=0.0, le=1.0, description="Minimum similarity score (0.0–1.0)")
+    brand: Optional[str] = Field(None, description="Filter by brand name (case-insensitive)")
+    page: int = Field(1, ge=1, description="Page number (1-indexed)")
+    page_size: int = Field(20, ge=1, le=100, description="Results per page")
 
 
 class SearchRequest(BaseModel):
@@ -63,6 +66,8 @@ class StoreInfo(BaseModel):
     buyme_url: Optional[str] = Field(None, description="BuyMe store page URL")
     is_online: bool = Field(..., description="True if the store operates online")
     city: Optional[str] = Field(None, description="City where the store is located")
+    lat: Optional[float] = Field(None, description="Store latitude for map display")
+    lng: Optional[float] = Field(None, description="Store longitude for map display")
     distance_km: Optional[float] = Field(
         None,
         description="Distance from user's location in km; null if location not provided",
@@ -110,7 +115,10 @@ class SearchResponse(BaseModel):
 
     results: list[ProductResult] = Field(..., description="Matched products from BuyMe partner stores")
     query_product: QueryProduct = Field(..., description="Extracted product from the submitted URL")
-    total: int = Field(..., ge=0, description="Total number of results returned")
+    total: int = Field(..., ge=0, description="Number of results on this page")
+    total_available: int = Field(..., ge=0, description="Total matching results across all pages")
+    page: int = Field(..., ge=1, description="Current page number (1-indexed)")
+    page_size: int = Field(..., ge=1, description="Results per page")
     exact_matches: int = Field(..., ge=0, description="Number of exact name matches")
     similar_matches: int = Field(..., ge=0, description="Number of partial / similar matches")
     search_time_ms: float = Field(..., ge=0.0, description="Total server-side search time in milliseconds")

@@ -43,7 +43,7 @@ router = APIRouter()
 _GEMINI_MODEL = "gemini-2.0-flash"
 _EMBEDDING_MODEL = "text-embedding-004"  # Gemini, 768 dims
 _HTTP_TIMEOUT = 10.0
-_MAX_RESULTS = 20
+_MAX_CANDIDATES = 200  # max filter-passing results to collect before pagination
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -169,7 +169,12 @@ async def search_products(
                     estimated_price=None,
                     extraction_success=False,
                 ),
-                total=0, exact_matches=0, similar_matches=0,
+                total=0,
+                total_available=0,
+                page=filters.page,
+                page_size=filters.page_size,
+                exact_matches=0,
+                similar_matches=0,
                 search_time_ms=round((time.time() - start_time) * 1000, 2),
             )
         search_text = product_name
@@ -185,11 +190,71 @@ async def search_products(
     embedding = await _embed(search_text, api_key)
 
     # ------------------------------------------------------------------
-    # Step 4: pgvector cosine search (falls back to ILIKE if no embeddings)
+    # Step 4: Hybrid search — vector (for embedded products) + ILIKE (for all)
     # ------------------------------------------------------------------
+    _ILIKE_SQL = text("""
+        SELECT DISTINCT ON (sp.product_id, sp.store_id)
+            sp.id            AS sp_id,
+            sp.price,
+            sp.currency,
+            sp.availability,
+            sp.product_url,
+            p.id             AS product_id,
+            p.canonical_name,
+            p.brand          AS product_brand,
+            p.category_path,
+            s.id             AS store_id,
+            s.name_he,
+            s.name_en,
+            s.buyme_url,
+            s.is_online,
+            s.city,
+            s.lat,
+            s.lng
+        FROM store_products sp
+        JOIN products p ON sp.product_id = p.id
+        JOIN stores s ON sp.store_id = s.id
+        WHERE p.canonical_name ILIKE :term
+           OR p.brand ILIKE :term
+           OR p.canonical_name ILIKE :word1
+           OR p.canonical_name ILIKE :word2
+        ORDER BY sp.product_id, sp.store_id
+        LIMIT :limit
+    """)
+
+    def _word_overlap_similarity(search_words: set[str], row: Any) -> float:
+        name_words = set((row["canonical_name"] or "").lower().split())
+        brand_words = set((row["product_brand"] or "").lower().split())
+        overlap = len(search_words & (name_words | brand_words))
+        return min(0.9, 0.4 + (overlap / max(len(search_words), 1)) * 0.5)
+
+    query_words_list = [w for w in search_text.split() if len(w) > 1]
+    word1 = f"%{query_words_list[0]}%" if query_words_list else f"%{search_text}%"
+    word2 = f"%{query_words_list[1]}%" if len(query_words_list) > 1 else word1
+    query_words_set = set(search_text.lower().split())
+
+    # Always run ILIKE to catch products not yet embedded
+    ilike_result = await db.execute(
+        _ILIKE_SQL,
+        {"term": f"%{search_text}%", "word1": word1, "word2": word2, "limit": _MAX_CANDIDATES * 2}
+    )
+    ilike_raw = ilike_result.mappings().all()
+    ilike_seen: set[str] = set()
+    ilike_rows: list[dict] = []
+    for r in ilike_raw:
+        key = f"{r['product_id']}:{r['store_id']}"
+        if key in ilike_seen:
+            continue
+        ilike_seen.add(key)
+        sim = _word_overlap_similarity(query_words_set, r)
+        ilike_rows.append({**r, "similarity": sim})
+    ilike_rows.sort(key=lambda x: x["similarity"], reverse=True)
+
+    # Run vector search if embedding is available
+    vector_rows: list = []
     if embedding:
         vec_str = _vec_literal(embedding)
-        sql = text("""
+        vec_sql = text("""
             SELECT * FROM (
                 SELECT DISTINCT ON (sp.product_id, sp.store_id)
                     sp.id            AS sp_id,
@@ -219,64 +284,57 @@ async def search_products(
             ORDER BY similarity DESC
             LIMIT :limit
         """)
-        result = await db.execute(sql, {"vec": vec_str, "limit": _MAX_RESULTS * 3})
-        rows = result.mappings().all()
+        vec_result = await db.execute(vec_sql, {"vec": vec_str, "limit": _MAX_CANDIDATES * 2})
+        vector_rows = list(vec_result.mappings().all())
 
-        # If no embeddings exist yet, fall back to ILIKE
-        if not rows:
-            embedding = None
+    # Merge: start with ILIKE results (keyword matches), then add vector results not already seen
+    # ILIKE results that have word overlap > 0.4 (i.e. at least 1 matching word) are high-confidence
+    seen_merged: set[str] = set()
+    merged: list[dict] = []
 
-    if not embedding:
-        # ILIKE fallback
-        sql = text("""
-            SELECT DISTINCT ON (sp.product_id, sp.store_id)
-                sp.id            AS sp_id,
-                sp.price,
-                sp.currency,
-                sp.availability,
-                sp.product_url,
-                p.id             AS product_id,
-                p.canonical_name,
-                p.brand          AS product_brand,
-                p.category_path,
-                s.id             AS store_id,
-                s.name_he,
-                s.name_en,
-                s.buyme_url,
-                s.is_online,
-                s.city,
-                s.lat,
-                s.lng
-            FROM store_products sp
-            JOIN products p ON sp.product_id = p.id
-            JOIN stores s ON sp.store_id = s.id
-            WHERE p.canonical_name ILIKE :term
-            ORDER BY sp.product_id, sp.store_id
-            LIMIT :limit
-        """)
-        result = await db.execute(
-            sql, {"term": f"%{search_text}%", "limit": _MAX_RESULTS}
-        )
-        raw_rows = result.mappings().all()
+    # First: high-confidence ILIKE hits (overlap > base similarity 0.4)
+    for r in ilike_rows:
+        if float(r["similarity"]) > 0.4:
+            key = f"{r['product_id']}:{r['store_id']}"
+            seen_merged.add(key)
+            merged.append(r)
 
-        # Compute word-overlap similarity instead of a static 0.5
-        query_words = set(search_text.lower().split())
-        enriched: list[dict] = []
-        for r in raw_rows:
-            name_words = set((r["canonical_name"] or "").lower().split())
-            overlap = len(query_words & name_words)
-            similarity = min(0.9, 0.4 + (overlap / max(len(query_words), 1)) * 0.5)
-            enriched.append({**r, "similarity": similarity})
-        rows = enriched
+    # Second: vector results with high similarity (> 0.5, to avoid noise)
+    for r in vector_rows:
+        key = f"{r['product_id']}:{r['store_id']}"
+        if key not in seen_merged and float(r["similarity"]) > 0.5:
+            seen_merged.add(key)
+            merged.append(dict(r))
+
+    # Third: remaining ILIKE results (base similarity = 0.4, no overlap)
+    for r in ilike_rows:
+        key = f"{r['product_id']}:{r['store_id']}"
+        if key not in seen_merged:
+            seen_merged.add(key)
+            merged.append(r)
+
+    # Fourth: remaining low-similarity vector results
+    for r in vector_rows:
+        key = f"{r['product_id']}:{r['store_id']}"
+        if key not in seen_merged:
+            seen_merged.add(key)
+            merged.append(dict(r))
+
+    # Sort the whole thing by similarity score
+    merged.sort(key=lambda x: float(x["similarity"]), reverse=True)
+    rows = merged
 
     # ------------------------------------------------------------------
-    # Step 5: Apply filters and build results
+    # Step 5: Apply filters and collect ALL passing results (up to _MAX_CANDIDATES)
     # ------------------------------------------------------------------
-    product_results: list[ProductResult] = []
-    exact_matches = 0
-    similar_matches = 0
+    all_results: list[ProductResult] = []
+    all_exact = 0
+    all_similar = 0
 
     for row in rows:
+        if len(all_results) >= _MAX_CANDIDATES:
+            break
+
         # online_only filter
         if filters.online_only and not row["is_online"]:
             continue
@@ -285,6 +343,12 @@ async def search_products(
         if filters.city:
             city = row["city"] or ""
             if filters.city.lower() not in city.lower():
+                continue
+
+        # brand filter
+        if filters.brand:
+            product_brand = row["product_brand"] or ""
+            if filters.brand.lower() not in product_brand.lower():
                 continue
 
         # max_price filter
@@ -309,9 +373,9 @@ async def search_products(
             continue
 
         if similarity >= 0.9:
-            exact_matches += 1
+            all_exact += 1
         else:
-            similar_matches += 1
+            all_similar += 1
 
         store_info = StoreInfo(
             id=str(row["store_id"]),
@@ -320,9 +384,11 @@ async def search_products(
             buyme_url=row["buyme_url"],
             is_online=row["is_online"],
             city=row["city"],
+            lat=row["lat"],
+            lng=row["lng"],
             distance_km=distance_km,
         )
-        product_results.append(
+        all_results.append(
             ProductResult(
                 product_id=str(row["product_id"]),
                 canonical_name=row["canonical_name"],
@@ -337,11 +403,19 @@ async def search_products(
             )
         )
 
-        if len(product_results) >= _MAX_RESULTS:
-            break
+    # ------------------------------------------------------------------
+    # Step 6: Apply pagination slice
+    # ------------------------------------------------------------------
+    total_available = len(all_results)
+    offset = (filters.page - 1) * filters.page_size
+    page_results = all_results[offset: offset + filters.page_size]
+
+    # Count exact/similar only for the current page
+    exact_matches = sum(1 for r in page_results if r.match_score >= 0.9)
+    similar_matches = sum(1 for r in page_results if r.match_score < 0.9)
 
     return SearchResponse(
-        results=product_results,
+        results=page_results,
         query_product=QueryProduct(
             raw_query=query,
             extracted_name=product_name,
@@ -349,7 +423,10 @@ async def search_products(
             estimated_price=None,
             extraction_success=True,
         ),
-        total=len(product_results),
+        total=len(page_results),
+        total_available=total_available,
+        page=filters.page,
+        page_size=filters.page_size,
         exact_matches=exact_matches,
         similar_matches=similar_matches,
         search_time_ms=round((time.time() - start_time) * 1000, 2),

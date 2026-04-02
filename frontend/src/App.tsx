@@ -10,18 +10,22 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [response, setResponse] = useState<SearchResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [currentQuery, setCurrentQuery] = useState<string>('')
   const [filters, setFilters] = useState<SearchFilters>({
     online_only: false,
     max_price: null,
     city: null,
+    brand: null,
     min_match_score: 0.3,
+    page: 1,
+    page_size: 20,
   })
 
-  const handleSearch = async (query: string) => {
+  const runSearch = async (query: string, updatedFilters: SearchFilters) => {
     setLoading(true)
     setError(null)
     try {
-      const data = await searchProduct(query, filters)
+      const data = await searchProduct(query, updatedFilters)
       setResponse(data)
     } catch (e) {
       setError('שגיאה בחיפוש. נסה שנית.')
@@ -30,13 +34,35 @@ export default function App() {
     }
   }
 
+  const handleSearch = async (query: string) => {
+    const resetFilters = { ...filters, page: 1 }
+    setCurrentQuery(query)
+    setFilters(resetFilters)
+    await runSearch(query, resetFilters)
+  }
+
+  const handlePageChange = async (newPage: number) => {
+    const updatedFilters = { ...filters, page: newPage }
+    setFilters(updatedFilters)
+    await runSearch(currentQuery, updatedFilters)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
   const activeFilterSummary = [
     filters.online_only ? 'אונליין בלבד' : null,
     filters.max_price != null ? `עד ₪${filters.max_price}` : null,
     filters.city ? `עיר: ${filters.city}` : null,
+    filters.brand ? `מותג: ${filters.brand}` : null,
   ]
     .filter(Boolean)
     .join(' · ')
+
+  const totalPages = response
+    ? Math.ceil(response.total_available / response.page_size)
+    : 0
+  const currentPage = response?.page ?? 1
+  const rangeStart = response ? (currentPage - 1) * response.page_size + 1 : 0
+  const rangeEnd = response ? rangeStart + response.results.length - 1 : 0
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white" dir="rtl">
@@ -68,17 +94,31 @@ export default function App() {
           <div className="mt-8 space-y-6">
             <div className="text-center">
               <p className="text-gray-600">
-                נמצאו{' '}
-                <strong>{response.total}</strong>{' '}
-                תוצאות עבור{' '}
-                <strong>{response.query_product.extracted_name ?? response.query_product.raw_query}</strong>
+                {response.total_available > 0 ? (
+                  <>
+                    נמצאו{' '}
+                    <strong>{response.total_available}</strong>{' '}
+                    תוצאות עבור{' '}
+                    <strong>{response.query_product.extracted_name ?? response.query_product.raw_query}</strong>
+                    {response.total_available > response.page_size && (
+                      <span className="text-sm text-gray-400 mr-2">
+                        (מציג {rangeStart}–{rangeEnd})
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    לא נמצאו תוצאות עבור{' '}
+                    <strong>{response.query_product.extracted_name ?? response.query_product.raw_query}</strong>
+                  </>
+                )}
                 {activeFilterSummary && (
-                  <span className="ml-2 text-sm text-blue-600">({activeFilterSummary})</span>
+                  <span className="mr-2 text-sm text-blue-600">({activeFilterSummary})</span>
                 )}
               </p>
             </div>
 
-            {response.results.some((r) => r.lat != null) && (
+            {response.results.some((r) => r.store.lat != null) && (
               <StoreMap results={response.results} />
             )}
 
@@ -87,6 +127,31 @@ export default function App() {
                 <ResultCard key={i} result={result} />
               ))}
             </div>
+
+            {/* Pagination controls */}
+            {totalPages > 1 && (
+              <div className="flex items-center justify-center gap-4 pt-4">
+                <button
+                  onClick={() => handlePageChange(currentPage + 1)}
+                  disabled={currentPage >= totalPages || loading}
+                  className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
+                >
+                  הבא &rarr;
+                </button>
+
+                <span className="text-sm text-gray-600">
+                  עמוד <strong>{currentPage}</strong> מתוך <strong>{totalPages}</strong>
+                </span>
+
+                <button
+                  onClick={() => handlePageChange(currentPage - 1)}
+                  disabled={currentPage <= 1 || loading}
+                  className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
+                >
+                  &larr; הקודם
+                </button>
+              </div>
+            )}
           </div>
         )}
 
