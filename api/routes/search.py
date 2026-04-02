@@ -18,15 +18,19 @@ import json
 import logging
 import math
 import time
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 import httpx
 from fastapi import APIRouter, Depends
 from openai import AsyncOpenAI
+from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.dependencies import get_ai_client, get_db, get_settings
+from pydantic import BaseModel
+
+from api.cache import get_search_cache, set_search_cache
+from api.dependencies import get_ai_client, get_db, get_redis, get_settings
 from api.schemas import (
     ProductResult,
     QueryProduct,
@@ -35,6 +39,32 @@ from api.schemas import (
     SearchResponse,
     StoreInfo,
 )
+
+
+# ---------------------------------------------------------------------------
+# Extended filter model (adds fields not yet in the READ-ONLY schemas.py)
+# ---------------------------------------------------------------------------
+
+
+class ExtendedSearchFilters(SearchFilters):
+    """SearchFilters extended with data-quality-sprint fields.
+
+    These fields are additive — they extend the base model without
+    modifying the read-only api/schemas.py contract.
+    """
+
+    min_price: Optional[float] = None
+    """Minimum product price in ILS (inclusive). Null-price products are excluded."""
+
+    show_out_of_stock: bool = False
+    """When False (default) out-of-stock products are hidden from results."""
+
+
+class ExtendedSearchRequest(BaseModel):
+    """SearchRequest that uses ExtendedSearchFilters instead of SearchFilters."""
+
+    query: str
+    filters: ExtendedSearchFilters = ExtendedSearchFilters()
 
 logger = logging.getLogger(__name__)
 
@@ -143,13 +173,20 @@ def _distance_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 
 @router.post("/search", response_model=SearchResponse)
 async def search_products(
-    request: SearchRequest,
+    request: ExtendedSearchRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     ai: Annotated[AsyncOpenAI, Depends(get_ai_client)],
+    redis: Annotated[Redis, Depends(get_redis)],
 ) -> SearchResponse:
     start_time = time.time()
     query = request.query.strip()
     filters = request.filters
+
+    # Check cache — skip embedding cost on repeated queries
+    filters_dict = filters.model_dump()
+    cached = await get_search_cache(redis, query, filters_dict)
+    if cached is not None:
+        return SearchResponse(**cached)
 
     # ------------------------------------------------------------------
     # Step 1 & 2: Resolve query → product name
@@ -356,6 +393,15 @@ async def search_products(
             if row["price"] > filters.max_price:
                 continue
 
+        # min_price filter — skip null-price rows when a min is set
+        if filters.min_price is not None:
+            if row["price"] is None or row["price"] < filters.min_price:
+                continue
+
+        # availability filter — hide out-of-stock by default unless show_out_of_stock=True
+        if not filters.show_out_of_stock and not row["availability"]:
+            continue
+
         # location radius filter
         distance_km: Optional[float] = None
         if filters.location is not None and row["lat"] is not None:
@@ -414,7 +460,7 @@ async def search_products(
     exact_matches = sum(1 for r in page_results if r.match_score >= 0.9)
     similar_matches = sum(1 for r in page_results if r.match_score < 0.9)
 
-    return SearchResponse(
+    response = SearchResponse(
         results=page_results,
         query_product=QueryProduct(
             raw_query=query,
@@ -431,3 +477,8 @@ async def search_products(
         similar_matches=similar_matches,
         search_time_ms=round((time.time() - start_time) * 1000, 2),
     )
+
+    # Store in cache
+    await set_search_cache(redis, query, filters_dict, response.model_dump())
+
+    return response

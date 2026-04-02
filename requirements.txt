@@ -29,7 +29,7 @@ openai==1.58.1           # Gemini OpenAI-compat client + embeddings for deduplic
 
 # --- Task queue (Layer 1 scheduler) ---
 celery==5.4.0
-redis==5.2.1
+redis[asyncio]==5.2.1
 
 # --- Geolocation (Layer 4) ---
 # PostGIS is a PostgreSQL extension; geoalchemy2 is the ORM wrapper
@@ -38,6 +38,11 @@ geoalchemy2==0.17.1
 # --- Utilities ---
 python-dotenv==1.0.1     # Load .env file
 requests==2.32.3         # Sync HTTP (keep for non-async scraper paths)
+
+# --- Auth ---
+python-jose[cryptography]==3.3.0  # JWT signing/verification
+passlib[bcrypt]==1.7.4            # password hashing
+authlib==1.3.0                    # Google OAuth
 
 # --- Testing ---
 pytest==8.3.4

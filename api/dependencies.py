@@ -13,7 +13,10 @@ from functools import lru_cache
 from typing import AsyncGenerator
 
 from openai import AsyncOpenAI
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from redis.asyncio import Redis
+from redis.asyncio import from_url as redis_from_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 
@@ -44,6 +47,9 @@ class Settings(BaseSettings):
 
     # CORS — comma-separated list of allowed origins, e.g. "http://localhost:3000,https://app.example.com"
     cors_origins: str = "*"
+
+    # Redis
+    redis_url: str = Field("redis://localhost:6379/0", validation_alias="REDIS_URL")
 
     # Runtime environment
     app_env: str = "development"
@@ -121,3 +127,24 @@ def get_ai_client() -> AsyncOpenAI:
     """
     settings = get_settings()
     return AsyncOpenAI(api_key=settings.gemini_api_key, base_url=_GEMINI_BASE_URL)
+
+
+# ---------------------------------------------------------------------------
+# Redis client
+# ---------------------------------------------------------------------------
+
+_redis_client: Redis | None = None
+
+
+async def get_redis() -> Redis:
+    """
+    FastAPI dependency that returns a shared async Redis client.
+
+    The client is created lazily on first call and reused for all subsequent
+    requests. Errors during Redis operations should be caught by callers —
+    Redis being unavailable must never break the main search flow.
+    """
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = redis_from_url(get_settings().redis_url, decode_responses=True)
+    return _redis_client

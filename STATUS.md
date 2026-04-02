@@ -17,6 +17,93 @@ Users type a product name (Hebrew/English) or paste a product URL → system ret
 
 ---
 
+## Completed Tasks — Full Project History ✅
+
+> Chronological log of every feature shipped, from project start to today (2026-04-02).
+
+### Week 1–2 · Infrastructure & Store Scraping
+
+| Date | Task | Files |
+|------|------|-------|
+| Week 1 | **Project scaffold** — FastAPI + React + PostgreSQL + pgvector skeleton. `.env`, `requirements.txt`, `main.py` | `main.py`, `.env.example`, `requirements.txt` |
+| Week 1 | **Database schema** — `stores`, `products`, `store_products`, `scrape_runs` tables via Alembic | `db/models.py`, `db/migrations/versions/0001_init.py` |
+| Week 1 | **BuyMe store scraper** — Playwright scrapes buyme.co.il → 1,226 partner stores (name, URL, category, is_online) | `scraper/buyme_store_scraper.py` |
+| Week 1 | **Store categorization** — 1,226 stores tagged by industry (fashion/restaurants/electronics/etc.) | `scraper/buyme_store_scraper.py` |
+| Week 2 | **Shopify fast-path scraper** — `/products.json` for 182 Shopify stores; structured product data with zero HTML parsing | `scraper/shopify_product_scraper.py` |
+| Week 2 | **Sitemap scraper (v1)** — WordPress/WooCommerce sitemap.xml → product pages → JSON-LD extraction | `scraper/sitemap_scraper.py` |
+| Week 2 | **Alembic migration 0002** — unique constraint `(store_id, product_url)` on `store_products` | `db/migrations/versions/0002_unique_constraint.py` |
+
+### Week 3–4 · Normalization Pipeline & Search
+
+| Date | Task | Files |
+|------|------|-------|
+| Week 3 | **Name normalizer** — Claude API + Instructor: raw product title → canonical Hebrew/English name | `normalization/name_normalizer.py` |
+| Week 3 | **Category classifier** — Claude API + Instructor: product → unified taxonomy path | `normalization/category_classifier.py` |
+| Week 3 | **Spec extractor** — Claude API + Instructor: brand, model, color, size from descriptions | `normalization/spec_extractor.py` |
+| Week 3 | **Deduplication engine (built, not wired)** — embedding cosine similarity to cluster same-product across stores | `normalization/deduplication.py` |
+| Week 3 | **Gemini embedding pipeline (v1, free tier)** — `text-embedding-004`, 768-dim vectors into `pgvector`; batch 20, delay 2.5s | `db/embed_products.py` |
+| Week 3 | **Alembic migration 0003** — `vector(768)` column on `products` | `db/migrations/versions/0003_vector_768.py` |
+| Week 4 | **POST /search API** — hybrid ILIKE + pgvector cosine search; `SearchRequest`/`SearchResponse` Pydantic schemas | `api/routes/search.py`, `api/schemas.py` |
+| Week 4 | **FastAPI app init** — CORS, `/health`, router registration | `api/main.py` |
+| Week 4 | **React frontend (v1)** — SearchBox, ResultCard, StoreMap (Leaflet), FilterBar | `frontend/src/App.tsx`, `frontend/src/components/` |
+| Week 4 | **TypeScript types** — `ProductResult`, `StoreInfo`, `SearchFilters`, `SearchResponse` | `frontend/src/types.ts`, `frontend/src/api.ts` |
+| Week 4 | **Nominatim geocoding** — batch geocode physical stores by address; 426 stores geocoded | `db/geocode_stores.py` |
+| Week 4 | **Celery scheduler skeleton** — scrape task stubs (not wired) | `scraper/scheduler.py` |
+
+### ~2026-03-25 · First Full Catalog & Search Quality
+
+| Date | Task | Files |
+|------|------|-------|
+| Mar 25 | **First product catalog milestone** — 134,036 products, 179,487 store-product links across 390 stores | DB only |
+| Mar 25 | **ILIKE fallback search** — searches both `brand` + `canonical_name`; deduplicates by `(product_id, store_id)`; sorted by word-overlap score | `api/routes/search.py` |
+| Mar 25 | **Frontend type fix** — `SearchResult` → `ProductResult` with nested `StoreInfo`; `ResultCard` and `StoreMap` updated to use correct fields + `store.lat`/`store.lng` | `frontend/src/types.ts`, `frontend/src/components/ResultCard.tsx`, `frontend/src/components/StoreMap.tsx` |
+| Mar 25 | **`lat`/`lng` added to `StoreInfo` schema** — enables Leaflet map pins from search results | `api/schemas.py` |
+| Mar 25 | **Electronics stores identified** — CrypTech (7,846), Alltech (975), Intech (593), ליאור (727) confirmed as BuyMe partners | CLAUDE.md, STATUS.md |
+| Mar 25 | **Sitemap scraper fixes (v2)** — (1) JSON-LD `@graph` array support for Yoast SEO/WooCommerce; (2) process all product sitemaps not just first; (3) URL cap raised to 2,000/store; (4) `ParserRejectedMarkup` caught | `scraper/sitemap_scraper.py` |
+| Mar 25 | **`--store-id` flag for embed script** — target a specific store's products for embedding | `db/embed_products.py` |
+
+### 2026-04-02 · Gemini Paid Tier, Pagination & Brand Filter
+
+| Date | Task | Files |
+|------|------|-------|
+| Apr 2 | **Gemini paid tier upgrade** — batch 20→100, delay 2.5s→0.1s (15 RPM → 1,500 RPM free) | `db/embed_products.py` |
+| Apr 2 | **Full embedding run** — 134,963/135,865 products embedded (99.3% coverage) in ~3 hours | DB only |
+| Apr 2 | **Pagination** — `page`/`page_size` in `SearchFilters`; backend collects 200 candidates, slices; `total_available` in response; frontend Previous/Next controls + "עמוד X מתוך Y" | `api/schemas.py`, `api/routes/search.py`, `frontend/src/App.tsx`, `frontend/src/types.ts` |
+| Apr 2 | **Brand filter** — text input in `FilterBar`; case-insensitive substring match in search route; reset on clear-filters | `api/schemas.py`, `api/routes/search.py`, `frontend/src/components/FilterBar.tsx` |
+| Apr 2 | **Scraper retry** — reset 59 `failed` + 31 `pending` → `skipped`; re-ran sitemap scraper; recovered 8 stores | `scraper/sitemap_scraper.py`, DB |
+| Apr 2 | **Geocoding blocker confirmed** — Nominatim finds 0 new stores; remaining 500 require Google Maps API (informal Israeli addresses) | `db/geocode_stores.py` |
+
+### 2026-04-02 · Nearby Store Search (Geo Mode)
+
+| Date | Task | Files |
+|------|------|-------|
+| Apr 2 | **POST /stores/search** — haversine distance calc, `store_type` filter (restaurant/retail), product count per store, pagination | `api/routes/stores.py`, `api/schemas.py` |
+| Apr 2 | **GET /geocode** — Nominatim address → `{lat, lng, display_name}` for address-to-coords lookup | `api/routes/stores.py` |
+| Apr 2 | **`StoreSearchRequest`/`StoreResult`/`StoreSearchResponse`** schemas | `api/schemas.py` |
+| Apr 2 | **`StoreCard.tsx`** — store result card: name, category badge (מסעדה/חנות), city, address, distance, product count, BuyMe link | `frontend/src/components/StoreCard.tsx` |
+| Apr 2 | **`StoreMap` refactored** — accepts `ProductResult[]` (mode="product") or `StoreResult[]` (mode="store") | `frontend/src/components/StoreMap.tsx` |
+| Apr 2 | **"חנויות בקרבת מקום" tab** — second tab in App.tsx with GPS/address input and store search | `frontend/src/App.tsx`, `frontend/src/api.ts`, `frontend/src/types.ts` |
+
+### 2026-04-02 · LLM-Powered Conversational Search (Multi-Agent Sprint)
+
+| Date | Task | Files |
+|------|------|-------|
+| Apr 2 | **Alembic migration 0004** — `voucher_network VARCHAR(50) DEFAULT 'buyme'` on `stores`; index created; all 1,226 stores tagged | `db/migrations/versions/0004_voucher_network.py` |
+| Apr 2 | **`api/prompts.py`** (Phase 1) — `INTENT_PARSER_SYSTEM` (Hebrew JSON), `RESPONSE_COMPOSER_SYSTEM`, `HELP_RESPONSE` | `api/prompts.py` |
+| Apr 2 | **Chat Pydantic schemas** (Phase 1) — `ChatMessage`, `SessionContext`, `ParsedIntent`, `ChatRequest`, `ChatResponse` | `api/schemas.py` |
+| Apr 2 | **`_parse_intent()`** — Gemini `gemini-2.5-flash` intent parser; regex `{.*?}` JSON extraction; fallback to `clarify` | `api/routes/chat.py` |
+| Apr 2 | **`_run_product_search()`** — reuses `_embed`/`_vec_literal` from search.py; `search_text` = product_query + brand; city-filter fallback on 0 results | `api/routes/chat.py` |
+| Apr 2 | **`_run_store_search()`** — reuses SQLAlchemy ORM pattern; city/store_type filters; haversine distance | `api/routes/chat.py` |
+| Apr 2 | **`_compose_response()`** — Gemini compose: top-3 results summary → 2-3 sentence Hebrew answer | `api/routes/chat.py` |
+| Apr 2 | **`POST /api/chat`** — 5-step flow: parse intent → needs_location check → search dispatch → compose → return `ChatResponse` | `api/routes/chat.py`, `api/main.py` |
+| Apr 2 | **`ChatInterface.tsx`** — WhatsApp-style RTL chat; user messages right/blue, assistant left/gray; three-dot loading; inline GPS button; `ProductResult[]` + `StoreResult[]` grid below bubble; history capped at 10 turns | `frontend/src/components/ChatInterface.tsx` |
+| Apr 2 | **"💬 שיחה" tab** — third tab in App.tsx rendering `<ChatInterface />` | `frontend/src/App.tsx` |
+| Apr 2 | **Frontend chat API** — `sendChatMessage()`, `geocodeAddress()` wrappers | `frontend/src/api.ts`, `frontend/src/types.ts` |
+| Apr 2 | **`tests/api/test_chat.py`** — 6 tests: product_search, store_search+city, needs_location (no GPS), needs_location (resolved), help, clarify | `tests/api/test_chat.py` |
+| Apr 2 | **Post-sprint bug fixes** — `gemini-2.0-flash`→`gemini-2.5-flash`; JSON truncation fix (`max_tokens` 256→512); Hebrew↔EN brand fix (include brand in search_text, remove strict filter); city-filter fallback (retry without city on 0 results) | `api/routes/chat.py`, `api/routes/search.py` |
+
+---
+
 ## Store Progress by Industry
 
 > Status key: ✅ success/done = scraped | 🔄 skipped = retry in progress | ⬜ no_sitemap = no product catalog found
@@ -540,3 +627,167 @@ FindMe/
 - Intent parser JSON extraction: regex `{.*?}` + `max_tokens` 256→512 (handles partial fences)
 - `search_text` now includes both `product_query` and `brand` to avoid Hebrew↔English brand filter mismatch
 - City-filter fallback: if city filter yields 0 results, retry without city filter
+
+## UI Sprint — 2026-04-02
+| Task | File | Status |
+|------|------|--------|
+| Remove tabs | App.tsx | ✅ Done |
+| Redesign ChatInterface | ChatInterface.tsx | ✅ Done |
+| Compact ResultCard | ResultCard.tsx | ✅ Done |
+| StoreCard badges | StoreCard.tsx | ✅ Done |
+| PWA meta + fonts | index.html, index.css | ✅ Done |
+
+## DB Agent — 2026-04-02
+| Migration | Status |
+|-----------|--------|
+| 0005_price_changes | ✅ Done |
+| 0006_user_accounts | ✅ Done |
+| Models updated (PriceChange + 7 user tables) | ✅ Done |
+
+## DevOps Agent — 2026-04-02
+| Task | Status |
+|------|--------|
+| docker-compose.yml | ✅ Done |
+| Dockerfile | ✅ Done |
+| .dockerignore | ✅ Done |
+| requirements.txt updated | ✅ Done |
+| .env.example updated | ✅ Done |
+
+## Scraper Agent — 2026-04-02
+| Task | Status |
+|------|--------|
+| scrape_buyme_store_list wired | ✅ Done |
+| scrape_shopify_stores task | ✅ Done |
+| scrape_sitemap_stores task | ✅ Done |
+| embed_new_products task | ✅ Done |
+| detect_price_changes task | ✅ Done |
+| beat_schedule updated | ✅ Done |
+
+## API Infra Agent — 2026-04-02
+| Task | Status |
+|------|--------|
+| get_redis() dependency | ✅ Done |
+| api/cache.py | ✅ Done |
+| Cache wired into search.py | ✅ Done |
+| Cache wired into chat.py | ✅ Done |
+| /api/admin/health | ✅ Done |
+
+## Frontend Auth Agent — 2026-04-02
+| Task | Status |
+|------|--------|
+| frontend/src/store/auth.ts | ✅ Done |
+| api.ts auth functions + header injection | ✅ Done |
+| types.ts user types | ✅ Done |
+| ChatInterface auth wired | ✅ Done |
+| ProfileDrawer.tsx | ✅ Done |
+
+## API Auth Agent — 2026-04-02
+| Task | Status |
+|------|--------|
+| api/auth.py (JWT + password) | ✅ Done |
+| api/routes/auth.py | ✅ Done |
+| api/routes/users.py | ✅ Done |
+| api/chat_utils.py | ✅ Done |
+| api/inference.py | ✅ Done |
+| chat.py wired with auth + personalization | ✅ Done |
+| main.py routers registered | ✅ Done |
+
+## Test Agent — 2026-04-02
+| File | Tests | Status |
+|------|-------|--------|
+| tests/api/test_auth.py | 8 | ✅ Passing |
+| tests/api/test_preferences.py | 6 | ✅ Passing |
+| tests/api/test_cache.py | 6 | ✅ Passing |
+
+Notes:
+- Installed python-jose[cryptography] and bcrypt==4.0.1 (passlib compatibility)
+- Key discovery: FastAPI 0.115 requires dependency overrides to be async gen
+  *callable classes* (with async __call__ yield) — plain lambdas wrapping async
+  gens are NOT recognized as async gen callables and receive the generator object
+  directly instead of the yielded session.
+- MockDbDep class pattern used throughout for correct FastAPI dependency injection.
+
+## Test Agent — 2026-04-02
+| File | Tests | Status |
+|------|-------|--------|
+| tests/api/test_auth.py | 8 | ✅ Passing |
+| tests/api/test_preferences.py | 6 | ✅ Passing |
+| tests/api/test_cache.py | 6 | ✅ Passing |
+
+## Phase 4 — Orchestrator Integration Results (2026-04-02)
+
+| Check | Result |
+|-------|--------|
+| All migrations applied (0006 head) | ✅ |
+| `pytest tests/ -v` — 29 tests | ✅ 29 passed |
+| Backend `GET /health` | ✅ `{"status":"ok"}` |
+| `GET /api/admin/health` | ✅ 135,865 products, 99.3% embedded, 1,226 stores |
+| `POST /api/chat` anonymous | ✅ intent=help, Hebrew response |
+| `POST /api/auth/register` | ✅ returns JWT token |
+| `POST /api/auth/login` | ✅ returns JWT token |
+| `POST /api/chat` with JWT | ✅ intent=product_search, 10 results |
+| Frontend `npm run build` | ✅ 80 modules, 317 kB, 0 errors |
+| Redis | ⚠️ Not installed locally — cache degrades gracefully |
+
+**Notes:**
+- Redis not installed locally — run `brew install redis` to enable caching
+- All cache functions silently degrade: `redis=unavailable` in admin/health, searches still work
+- `docker-compose up` will start Redis + Postgres automatically for full-stack local dev
+
+## Data Quality: DB+API Agent — 2026-04-02
+| Task | Status |
+|------|--------|
+| Migration 0007: image_url column | ✅ Done |
+| StoreProduct model updated | ✅ Done |
+| min_price filter in search.py | ✅ Done |
+| availability filter (hide out-of-stock) | ✅ Done |
+| db/fix_lior_brands.py script | ✅ Done |
+| ליאור brand fix applied | ✅ 312 products updated |
+
+## Data Quality: Frontend Agent — 2026-04-02
+| Task | Status |
+|------|--------|
+| image_url in types.ts | ✅ Done |
+| ResultCard: image display | ✅ Done |
+| ResultCard: null price → "מחיר לא זמין" | ✅ Done |
+| ResultCard: availability dot | ✅ Done |
+| ChatInterface: "ועוד X" overflow | ✅ Done |
+| StoreCard improvements | ✅ Done |
+| npm run build: 0 errors | ✅ Done |
+
+## Data Quality: Geocoding+Dedup Agent — 2026-04-02
+| Task | Status |
+|------|--------|
+| geocode_stores.py: Google Maps support | ✅ Done |
+| geocode_stores.py: --force and --store-id flags | ✅ Done |
+| deduplication.py: standalone runnable | ✅ Done |
+| scheduler.py: run_deduplication task | ✅ Done |
+| db/run_geocoding.py convenience script | ✅ Done |
+| Note: geocoding requires GOOGLE_MAPS_API_KEY in .env to run on remaining 500 stores | ⚠️ |
+
+## Data Quality Sprint — Final Integration (2026-04-02)
+
+| Check | Result |
+|-------|--------|
+| Migration 0007 (image_url on store_products) | ✅ Applied |
+| Migration 0008 (is_duplicate, canonical_product_id on products) | ✅ Applied |
+| Alembic current | ✅ 0008 (head) |
+| Brand fix: ליאור null→brand | ✅ 312 / 727 products fixed (415 have no recognizable brand in name) |
+| null_brand count | 3,756 → 3,444 |
+| Search: min_price filter | ✅ Wired in search.py (ExtendedSearchFilters) |
+| Search: availability filter (hide out-of-stock default) | ✅ Wired |
+| ResultCard: "מחיר לא זמין" for null price | ✅ Done |
+| ResultCard: image_url display with fallback | ✅ Done |
+| ChatInterface: "ועוד X תוצאות" overflow | ✅ Done |
+| StoreCard: long-name truncation | ✅ Done |
+| geocode_stores.py: Google Maps + Nominatim fallback | ✅ Code ready |
+| db/run_geocoding.py convenience script | ✅ Done |
+| normalization/deduplication.py: standalone runnable | ✅ Done |
+| scheduler.py: run_deduplication Celery task (Monday 06:00) | ✅ Done |
+| pytest tests/ -q | ✅ 29 passed |
+| npm run build | ✅ 80 modules, 317 kB, 0 errors |
+
+**Pending (need external inputs):**
+- Geocoding 500 physical stores: add `GOOGLE_MAPS_API_KEY=<key>` to `.env`, then `python -m db.run_geocoding`
+- Deduplication: run `python -m normalization.deduplication` (infrastructure ready, hasn't run yet)
+- Product images: scrapers need updating to populate `store_products.image_url` column

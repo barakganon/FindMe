@@ -1,56 +1,62 @@
+import { useState } from 'react'
 import type { ProductResult } from '../types'
 
 interface Props { result: ProductResult }
 
 export function ResultCard({ result }: Props) {
-  const storeName = result.store.name_en ?? result.store.name_he
-  const scorePercent = Math.round(result.match_score * 100)
+  const storeName = result.store.name_he
+  const [imgError, setImgError] = useState(false)
+
+  const linkUrl = result.product_url ?? result.store.buyme_url
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex flex-col gap-2 hover:shadow-md transition-shadow">
-      <div className="flex justify-between items-start">
-        <span className="font-bold text-lg text-gray-800">{storeName}</span>
-        {result.availability
-          ? <span className="text-green-600 text-sm font-medium">במלאי</span>
-          : <span className="text-red-400 text-sm">אזל</span>}
-      </div>
-      <p className="text-gray-700 text-sm font-medium">{result.canonical_name}</p>
-      {result.brand && (
-        <p className="text-gray-400 text-xs">{result.brand}</p>
+    <div className="bg-white border border-gray-100 rounded-xl shadow-sm p-3 flex flex-col gap-1.5 hover:shadow-md transition-shadow">
+      {/* Product image */}
+      {result.image_url && !imgError && (
+        <img
+          src={result.image_url}
+          alt={result.canonical_name}
+          className="w-full h-24 object-cover rounded-lg mb-1"
+          onError={() => setImgError(true)}
+        />
       )}
-      {result.price != null && (
-        <p className="text-blue-700 font-bold text-xl">
+
+      {/* Store name */}
+      <p className="text-xs text-gray-400">{storeName}</p>
+
+      {/* Product name */}
+      <p className="text-sm font-medium text-gray-900 line-clamp-2 leading-snug">
+        {result.canonical_name}
+      </p>
+
+      {/* Price */}
+      {result.price != null ? (
+        <span className="text-green-600 font-semibold text-sm">
           ₪{result.price.toLocaleString('he-IL')}
-        </p>
+        </span>
+      ) : (
+        <span className="text-gray-400 text-xs">מחיר לא זמין</span>
       )}
-      <div className="flex gap-2 text-xs text-gray-400 flex-wrap">
-        {result.store.city && <span>📍 {result.store.city}</span>}
-        {result.store.is_online && <span>🌐 אונליין</span>}
+
+      {/* Availability + meta row */}
+      <div className="flex items-center gap-2 text-xs text-gray-400">
+        <span className={result.availability ? 'text-green-500' : 'text-gray-400'}>●</span>
+        <span>{result.availability ? 'במלאי' : 'אזל'}</span>
+        {result.store.city && <span>· {result.store.city}</span>}
         {result.store.distance_km != null && (
-          <span>📏 {result.store.distance_km} ק"מ</span>
+          <span>· {result.store.distance_km.toFixed(1)} ק"מ</span>
         )}
-        <span className="mr-auto text-blue-400">{scorePercent}% התאמה</span>
       </div>
-      {result.product_url && (
-        <a
-          href={result.product_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-1 text-center py-2 bg-orange-500 text-white rounded-lg text-sm font-medium hover:bg-orange-600 transition-colors"
-        >
-          לצפייה במוצר
-        </a>
-      )}
-      {result.store.buyme_url && (
-        <a
-          href={result.store.buyme_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-center py-1.5 border border-orange-300 text-orange-600 rounded-lg text-xs hover:bg-orange-50 transition-colors"
-        >
-          לחנות BuyMe
-        </a>
-      )}
+
+      {/* Purchase link */}
+      <a
+        href={linkUrl || '#'}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-1 text-blue-600 text-xs hover:underline"
+      >
+        לרכישה ←
+      </a>
     </div>
   )
 }

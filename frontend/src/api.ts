@@ -1,11 +1,13 @@
-import type { SearchFilters, SearchResponse, StoreSearchRequest, StoreSearchResponse, ChatMessage, SessionContext, ChatResponse } from './types'
+import type { SearchFilters, SearchResponse, StoreSearchRequest, StoreSearchResponse, ChatMessage, SessionContext, ChatResponse, User, UserLocation, VoucherCard, InferredAttribute, FavoriteStore } from './types'
+import { getAuthHeader } from './store/auth'
 
 const BASE = '/api'
+const API_BASE = 'http://localhost:8000'
 
 export async function searchProduct(query: string, filters: SearchFilters): Promise<SearchResponse> {
   const res = await fetch(`${BASE}/search`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
     body: JSON.stringify({ query, filters }),
   })
   if (!res.ok) throw new Error(`Search failed: ${res.status}`)
@@ -15,7 +17,7 @@ export async function searchProduct(query: string, filters: SearchFilters): Prom
 export async function searchStores(req: StoreSearchRequest): Promise<StoreSearchResponse> {
   const res = await fetch(`${BASE}/stores/search`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
     body: JSON.stringify(req),
   })
   if (!res.ok) throw new Error('Store search failed')
@@ -23,7 +25,9 @@ export async function searchStores(req: StoreSearchRequest): Promise<StoreSearch
 }
 
 export async function geocodeAddress(address: string): Promise<{ lat: number; lng: number; display_name: string }> {
-  const res = await fetch(`${BASE}/geocode?address=${encodeURIComponent(address)}`)
+  const res = await fetch(`${BASE}/geocode?address=${encodeURIComponent(address)}`, {
+    headers: { ...getAuthHeader() },
+  })
   if (!res.ok) throw new Error('Geocoding failed')
   return res.json()
 }
@@ -35,7 +39,7 @@ export async function sendChatMessage(
 ): Promise<ChatResponse> {
   const res = await fetch(`${BASE}/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
     body: JSON.stringify({
       message,
       history,
@@ -45,4 +49,101 @@ export async function sendChatMessage(
   })
   if (!res.ok) throw new Error('שגיאה בשליחת הודעה')
   return res.json()
+}
+
+// Auth functions
+export async function register(email: string, password: string, displayName?: string): Promise<{ token: string; user: User }> {
+  const res = await fetch(`${API_BASE}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, display_name: displayName }),
+  });
+  if (!res.ok) throw new Error((await res.json()).detail || 'Registration failed');
+  return res.json();
+}
+
+export async function login(email: string, password: string): Promise<{ token: string; user: User }> {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) throw new Error((await res.json()).detail || 'Login failed');
+  return res.json();
+}
+
+export async function getMe(): Promise<User> {
+  const res = await fetch(`${API_BASE}/api/auth/me`, {
+    headers: { ...getAuthHeader() },
+  });
+  if (!res.ok) throw new Error('Unauthorized');
+  return res.json();
+}
+
+export async function importSession(sessionHistory: Array<{role: string; content: string}>, sessionContext: Record<string, unknown> | null): Promise<{ status: string }> {
+  const res = await fetch(`${API_BASE}/api/auth/import-session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
+    body: JSON.stringify({ session_history: sessionHistory, session_context: sessionContext }),
+  });
+  if (!res.ok) throw new Error('Import failed');
+  return res.json();
+}
+
+export async function getInferred(): Promise<InferredAttribute[]> {
+  const res = await fetch(`${API_BASE}/api/users/me/inferred`, { headers: { ...getAuthHeader() } });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function deleteInferred(id: string): Promise<void> {
+  await fetch(`${API_BASE}/api/users/me/inferred/${id}`, { method: 'DELETE', headers: { ...getAuthHeader() } });
+}
+
+export async function confirmInferred(id: string): Promise<void> {
+  await fetch(`${API_BASE}/api/users/me/inferred/${id}/confirm`, { method: 'PUT', headers: { ...getAuthHeader() } });
+}
+
+export async function updatePreferences(prefs: Record<string, string>): Promise<void> {
+  await fetch(`${API_BASE}/api/users/me/preferences`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
+    body: JSON.stringify(prefs),
+  });
+}
+
+export async function getLocations(): Promise<UserLocation[]> {
+  const res = await fetch(`${API_BASE}/api/users/me/locations`, { headers: { ...getAuthHeader() } });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function getVouchers(): Promise<VoucherCard[]> {
+  const res = await fetch(`${API_BASE}/api/users/me/vouchers`, { headers: { ...getAuthHeader() } });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function getSearchHistory(): Promise<{ message: string; searched_at: string }[]> {
+  const res = await fetch(`${API_BASE}/api/users/me/history`, { headers: { ...getAuthHeader() } });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function clearSearchHistory(): Promise<void> {
+  await fetch(`${API_BASE}/api/users/me/history`, { method: 'DELETE', headers: { ...getAuthHeader() } });
+}
+
+export async function addFavorite(storeId: string, note?: string): Promise<void> {
+  await fetch(`${API_BASE}/api/users/me/favorites`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
+    body: JSON.stringify({ store_id: storeId, note }),
+  });
+}
+
+export async function getFavorites(): Promise<FavoriteStore[]> {
+  const res = await fetch(`${API_BASE}/api/users/me/favorites`, { headers: { ...getAuthHeader() } });
+  if (!res.ok) return [];
+  return res.json();
 }

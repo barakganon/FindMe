@@ -2,4 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
-body { font-family: 'Segoe UI', Arial, sans-serif; direction: rtl; }
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+  direction: rtl;
+}

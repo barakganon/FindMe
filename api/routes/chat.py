@@ -24,11 +24,16 @@ from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends
 from openai import AsyncOpenAI
+from redis.asyncio import Redis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
-from api.dependencies import get_ai_client, get_db, get_settings
+from api.auth import get_optional_user
+from api.cache import get_intent_cache, set_intent_cache
+from api.chat_utils import apply_inferred_attributes, build_user_context_block, merge_preferences_into_search
+from api.dependencies import get_ai_client, get_db, get_redis, get_settings
+from api.inference import extract_and_update_attributes
 from api.prompts import HELP_RESPONSE, INTENT_PARSER_SYSTEM, RESPONSE_COMPOSER_SYSTEM
 from api.routes.search import _embed, _vec_literal, _distance_km
 from api.routes.stores import _haversine_km
@@ -65,13 +70,23 @@ async def _parse_intent(
     history: list[ChatMessage],
     session_context: Optional[SessionContext],
     client: AsyncOpenAI,
+    redis: Optional[Redis] = None,
+    user_context: str = "",
 ) -> ParsedIntent:
     """
     Call Gemini with INTENT_PARSER_SYSTEM to extract structured intent from the
     user's message and conversation history.
 
     Returns a ParsedIntent; falls back to intent='clarify' on any parse failure.
+    Intent results are cached in Redis for 2 minutes to avoid repeat LLM calls.
+    Optional user_context (for logged-in users) is appended to the system prompt.
     """
+    # Check intent cache (message only — history may vary, but message is the primary key)
+    if redis is not None:
+        cached = await get_intent_cache(redis, message)
+        if cached is not None:
+            return ParsedIntent(**cached)
+
     # Build a history string so Gemini has context
     history_lines: list[str] = []
     for turn in history[-6:]:  # last 6 turns is enough context
@@ -83,12 +98,18 @@ async def _parse_intent(
         f"{history_str}\nמשתמש: {message}" if history_str else f"משתמש: {message}"
     )
 
+    # Enrich system prompt with user context for logged-in users
+    if user_context:
+        system_prompt = INTENT_PARSER_SYSTEM + "\n\n" + user_context
+    else:
+        system_prompt = INTENT_PARSER_SYSTEM
+
     try:
         response = await client.chat.completions.create(
             model=_GEMINI_MODEL,
             max_tokens=512,
             messages=[
-                {"role": "system", "content": INTENT_PARSER_SYSTEM},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
         )
@@ -105,7 +126,7 @@ async def _parse_intent(
         if intent not in valid_intents:
             intent = "clarify"
 
-        return ParsedIntent(
+        parsed_intent = ParsedIntent(
             intent=intent,
             product_query=data.get("product_query"),
             brand=data.get("brand"),
@@ -116,6 +137,12 @@ async def _parse_intent(
             store_type=data.get("store_type"),
             voucher_network=data.get("voucher_network", "buyme"),
         )
+
+        # Store parsed intent in cache before returning
+        if redis is not None:
+            await set_intent_cache(redis, message, parsed_intent.model_dump())
+
+        return parsed_intent
 
     except Exception as exc:
         logger.warning("Intent parse failed: %s", exc)
@@ -492,6 +519,8 @@ async def chat(
     request: ChatRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     ai: Annotated[AsyncOpenAI, Depends(get_ai_client)],
+    redis: Annotated[Redis, Depends(get_redis)],
+    current_user=Depends(get_optional_user),
 ) -> ChatResponse:
     """
     Conversational search endpoint.
@@ -500,6 +529,9 @@ async def chat(
     and optional session context (GPS, voucher network). Parses intent, runs
     the appropriate search, and returns a Hebrew natural-language response
     together with structured product or store results.
+
+    Works for both anonymous users (no JWT) and logged-in users (with JWT).
+    Logged-in users get personalized results based on preferences and history.
     """
     start_time = time.time()
 
@@ -511,6 +543,49 @@ async def chat(
     )
 
     # ------------------------------------------------------------------
+    # Step 1a — Load personalization context for logged-in users
+    # ------------------------------------------------------------------
+    user_context = ""
+    prefs: dict = {}
+    implicit: list = []
+
+    if current_user:
+        try:
+            from sqlalchemy import select as sa_select
+            from db.models import UserPreference, UserImplicitSignal, UserSearchHistory
+
+            prefs_rows = await db.execute(
+                sa_select(UserPreference).where(UserPreference.user_id == current_user.id)
+            )
+            prefs = {p.key: p.value for p in prefs_rows.scalars().all()}
+
+            signals_rows = await db.execute(
+                sa_select(UserImplicitSignal)
+                .where(UserImplicitSignal.user_id == current_user.id)
+                .order_by(UserImplicitSignal.last_seen.desc())
+                .limit(10)
+            )
+            implicit = [
+                {"signal_type": s.signal_type, "signal_value": s.signal_value}
+                for s in signals_rows.scalars().all()
+            ]
+
+            history_rows = await db.execute(
+                sa_select(UserSearchHistory)
+                .where(UserSearchHistory.user_id == current_user.id)
+                .order_by(UserSearchHistory.searched_at.desc())
+                .limit(3)
+            )
+            user_history = [
+                {"message": h.message, "searched_at": str(h.searched_at)}
+                for h in history_rows.scalars().all()
+            ]
+
+            user_context = build_user_context_block(prefs, implicit, user_history)
+        except Exception:
+            pass  # Never block the request
+
+    # ------------------------------------------------------------------
     # Step 1 — Parse intent
     # ------------------------------------------------------------------
     parsed = await _parse_intent(
@@ -518,7 +593,32 @@ async def chat(
         history=request.history,
         session_context=session_context,
         client=ai,
+        redis=redis,
+        user_context=user_context,
     )
+
+    # ------------------------------------------------------------------
+    # Step 1b — Merge preferences and inferred attributes
+    # ------------------------------------------------------------------
+    if current_user and prefs:
+        try:
+            parsed = merge_preferences_into_search(parsed, prefs, implicit)
+
+            from sqlalchemy import select as sa_select
+            from db.models import UserInferredAttribute
+
+            inferred_rows = await db.execute(
+                sa_select(UserInferredAttribute).where(
+                    UserInferredAttribute.user_id == current_user.id
+                )
+            )
+            inferred = [
+                {"attribute": a.attribute, "value": a.value, "confidence": a.confidence}
+                for a in inferred_rows.scalars().all()
+            ]
+            parsed = apply_inferred_attributes(parsed, inferred)
+        except Exception:
+            pass  # Never block the request
 
     # ------------------------------------------------------------------
     # Step 2 — Handle needs_location
@@ -623,6 +723,59 @@ async def chat(
         except Exception as exc:
             logger.warning("Clarify LLM call failed: %s", exc)
             message = "לא הבנתי את הבקשה. האם תוכל לפרט יותר מה אתה מחפש?"
+
+    # ------------------------------------------------------------------
+    # Step 4b — Save history + fire inference (logged-in users only)
+    # ------------------------------------------------------------------
+    if current_user:
+        try:
+            import asyncio
+            from sqlalchemy import text as sa_text
+            from db.models import UserSearchHistory
+
+            results_list = product_results or store_results or []
+            top_result_name: Optional[str] = None
+            if product_results:
+                top_result_name = product_results[0].canonical_name if product_results else None
+            elif store_results:
+                top_result_name = store_results[0].name_he if store_results else None
+
+            history_entry = UserSearchHistory(
+                user_id=current_user.id,
+                message=request.message,
+                intent=parsed.intent,
+                resolved_query=parsed.product_query or parsed.city,
+                city_used=parsed.city,
+                result_count=len(results_list),
+                top_result_name=top_result_name,
+                voucher_network=voucher_network,
+            )
+            db.add(history_entry)
+
+            # Update city implicit signal
+            if parsed.city:
+                await db.execute(
+                    sa_text("""
+                        INSERT INTO user_implicit_signals
+                            (id, user_id, signal_type, signal_value, weight, last_seen, count)
+                        VALUES (gen_random_uuid(), :uid, 'city_search', :val, 1.0, now(), 1)
+                        ON CONFLICT (user_id, signal_type, signal_value)
+                        DO UPDATE SET
+                            weight   = user_implicit_signals.weight + 0.1,
+                            count    = user_implicit_signals.count + 1,
+                            last_seen = now()
+                    """),
+                    {"uid": str(current_user.id), "val": parsed.city},
+                )
+
+            await db.commit()
+
+            # Fire-and-forget inference extraction (never blocks response)
+            asyncio.create_task(
+                extract_and_update_attributes(current_user.id, request.message, db, ai)
+            )
+        except Exception:
+            pass  # Never block the response
 
     # ------------------------------------------------------------------
     # Step 5 — Return ChatResponse

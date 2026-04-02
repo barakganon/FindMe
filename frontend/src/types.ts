@@ -1,11 +1,13 @@
 export interface SearchFilters {
   online_only: boolean
   max_price: number | null
+  min_price?: number | null
   city: string | null
   min_match_score: number
   brand: string | null
   page: number
   page_size: number
+  hide_out_of_stock?: boolean
 }
 
 export interface StoreResult {
@@ -62,6 +64,7 @@ export interface ProductResult {
   availability: boolean
   product_url: string | null
   match_score: number
+  image_url?: string | null
 }
 
 export interface QueryProduct {
@@ -105,4 +108,68 @@ export interface ChatResponse {
   location_prompt: string | null
   voucher_network: string
   search_time_ms: number
+  total_available?: number | null
+}
+
+// Auth types
+export interface User {
+  id: string;
+  email: string;
+  display_name: string | null;
+}
+
+export interface AuthState {
+  user: User | null;
+  token: string | null;
+  isAuthenticated: boolean;
+}
+
+export interface UserLocation {
+  id: string;
+  label: string;
+  lat: number;
+  lng: number;
+  address?: string;
+  is_default: boolean;
+}
+
+export interface VoucherCard {
+  id: string;
+  voucher_network: string;
+  nickname?: string;
+  balance?: number;
+  expiry_date?: string;
+  is_active: boolean;
+}
+
+export interface UserPreferences {
+  default_max_price?: string;
+  preferred_cities?: string;
+  preferred_categories?: string;
+  show_online_only?: string;
+  default_radius_km?: string;
+}
+
+export interface InferredAttribute {
+  id: string;
+  attribute: string;
+  value: string;
+  confidence: number;
+  source?: string;
+  inferred_at: string;
+  is_confirmed: boolean;
+}
+
+export interface FavoriteStore {
+  store_id: string;
+  note?: string;
+  saved_at: string;
+}
+
+export interface SearchHistoryItem {
+  id: string;
+  message: string;
+  intent?: string;
+  searched_at: string;
+  result_count?: number;
 }

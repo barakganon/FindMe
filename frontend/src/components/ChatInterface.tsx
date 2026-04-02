@@ -1,77 +1,124 @@
 import { useState, useRef, useEffect } from 'react'
-import { sendChatMessage } from '../api'
-import type { ChatMessage, ChatResponse, SessionContext, ProductResult, StoreResult } from '../types'
+import { sendChatMessage, getMe, register, importSession } from '../api'
+import type { ChatMessage, ChatResponse, SessionContext, ProductResult, StoreResult, User } from '../types'
+import { getSavedToken, saveAuth, clearAuth, isRegistrationDismissed, dismissRegistration } from '../store/auth'
 import { ResultCard } from './ResultCard'
 import { StoreCard } from './StoreCard'
 import { StoreMap } from './StoreMap'
+import ProfileDrawer from './ProfileDrawer'
 
-// Extended message type that carries the full API response for result rendering
+interface Props {
+  sessionContext: SessionContext | null
+  onLocationUpdate: (ctx: SessionContext) => void
+}
+
 interface ChatEntry {
   role: 'user' | 'assistant'
   content: string
   response?: ChatResponse
 }
 
-const WELCOME_MESSAGE: ChatEntry = {
+const WELCOME_MESSAGE = (name?: string | null): ChatEntry => ({
   role: 'assistant',
-  content: 'שלום! 👋 אני עוזר ה-BuyMe שלך. אפשר לשאול אותי על מוצרים, מסעדות, חנויות, או כל דבר אחר שאפשר לקנות עם כרטיס ה-BuyMe שלך.',
-}
+  content: name
+    ? `שלום ${name}! מה תרצה למצוא היום? 🔍`
+    : 'שלום! 👋 אני FindMe. תגיד לי מה אתה מחפש ואני אמצא היכן להשתמש בכרטיס BuyMe שלך.',
+})
 
-const INITIAL_SESSION: SessionContext = {
-  user_lat: null,
-  user_lng: null,
-  location_label: null,
-  voucher_network: 'buyme',
-}
+const SUGGESTION_CHIPS = [
+  '🍽️ מסעדות בתל אביב',
+  '🎧 אוזניות סוני',
+  '👗 חנויות אופנה לידי',
+  '💄 ספא וטיפוח',
+]
 
-export function ChatInterface() {
-  const [messages, setMessages] = useState<ChatEntry[]>([WELCOME_MESSAGE])
+export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
+  const [currentUser, setCurrentUser] = useState<User | null>(null)
+  const [messages, setMessages] = useState<ChatEntry[]>([WELCOME_MESSAGE(null)])
   const [inputValue, setInputValue] = useState('')
   const [loading, setLoading] = useState(false)
-  const [sessionContext, setSessionContext] = useState<SessionContext>(INITIAL_SESSION)
+  const [chipsVisible, setChipsVisible] = useState(true)
+  const [lastMessage, setLastMessage] = useState<string>('')
+  const [showRegPrompt, setShowRegPrompt] = useState(false)
+  const [showRegForm, setShowRegForm] = useState(false)
+  const [regEmail, setRegEmail] = useState('')
+  const [regPassword, setRegPassword] = useState('')
+  const [regName, setRegName] = useState('')
+  const [regError, setRegError] = useState('')
+  const [profileOpen, setProfileOpen] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const userMessageCount = useRef(0)
 
-  // Auto-scroll to bottom whenever messages change
+  // Load existing auth on mount
+  useEffect(() => {
+    const token = getSavedToken()
+    if (token) {
+      getMe()
+        .then(user => {
+          setCurrentUser(user)
+          setMessages([WELCOME_MESSAGE(user.display_name)])
+        })
+        .catch(() => clearAuth())
+    }
+  }, [])
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
 
-  const requestGPS = () => {
+  const currentSession: SessionContext = sessionContext ?? {
+    user_lat: null,
+    user_lng: null,
+    location_label: null,
+    voucher_network: 'buyme',
+  }
+
+  const requestGPS = (resendMessage?: string) => {
     if (!navigator.geolocation) return
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setSessionContext((prev) => ({
-          ...prev,
+        const updated: SessionContext = {
+          ...currentSession,
           user_lat: pos.coords.latitude,
           user_lng: pos.coords.longitude,
           location_label: 'המיקום שלי',
-        }))
+        }
+        onLocationUpdate(updated)
+        if (resendMessage) {
+          sendMessage(resendMessage, updated)
+        }
       },
       () => {
-        // silently ignore — user denied
+        // user denied — silently ignore
       }
     )
   }
 
-  const handleSend = async () => {
-    const text = inputValue.trim()
-    if (!text || loading) return
+  const sendMessage = async (text: string, overrideSession?: SessionContext) => {
+    if (!text.trim() || loading) return
 
-    // Build history from last 10 messages (excluding the current user turn)
+    const session = overrideSession ?? currentSession
+
     const history: ChatMessage[] = messages.slice(-10).map((m) => ({
       role: m.role,
       content: m.content,
     }))
 
-    // Append user message
     const userEntry: ChatEntry = { role: 'user', content: text }
     setMessages((prev) => [...prev, userEntry])
-    setInputValue('')
+    setLastMessage(text)
     setLoading(true)
+    setChipsVisible(false)
+
+    // Increment message count and show registration prompt after 3rd message
+    userMessageCount.current += 1
+    if (userMessageCount.current === 3 && !currentUser && !isRegistrationDismissed()) {
+      setShowRegPrompt(true)
+    }
 
     try {
-      const chatResponse = await sendChatMessage(text, history, sessionContext)
+      const chatResponse = await sendChatMessage(text, history, session)
       const assistantEntry: ChatEntry = {
         role: 'assistant',
         content: chatResponse.message,
@@ -86,51 +133,122 @@ export function ChatInterface() {
       setMessages((prev) => [...prev, errorEntry])
     } finally {
       setLoading(false)
-      inputRef.current?.focus()
+      textareaRef.current?.focus()
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleSend = () => {
+    const text = inputValue.trim()
+    if (!text || loading) return
+    setInputValue('')
+    sendMessage(text)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
     }
   }
 
+  const handleChipClick = (chip: string) => {
+    setInputValue('')
+    sendMessage(chip)
+  }
+
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setRegError('')
+    try {
+      const result = await register(regEmail, regPassword, regName || undefined)
+      saveAuth(result.token, result.user)
+      setCurrentUser(result.user)
+      await importSession(
+        messages
+          .filter(m => m.role !== 'assistant' || !m.response)
+          .map(m => ({ role: m.role, content: m.content })),
+        sessionContext as Record<string, unknown> | null
+      ).catch(() => {})
+      setShowRegPrompt(false)
+      setShowRegForm(false)
+    } catch (err: unknown) {
+      setRegError(err instanceof Error ? err.message : 'שגיאה ברישום')
+    }
+  }
+
   return (
-    <div className="flex flex-col h-[calc(100vh-200px)] min-h-[500px]" dir="rtl">
+    <div
+      className="flex flex-col h-screen bg-gray-50"
+      dir="rtl"
+      lang="he"
+      style={{ fontFamily: "-apple-system, 'Segoe UI', sans-serif" }}
+    >
+      {/* Fixed header (56px) */}
+      <header className="bg-white border-b border-gray-100 shadow-sm flex items-center justify-between px-4 shrink-0" style={{ height: '56px' }}>
+        <div className="flex items-center gap-2">
+          <span className="text-xl font-bold text-blue-600">🔍 FindMe</span>
+          <span className="text-gray-400 text-sm hidden sm:inline">חיפוש חכם לכרטיסי BuyMe</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="bg-blue-600 text-white text-xs font-medium px-2 py-1 rounded-full">
+            BuyMe ✓
+          </span>
+          {/* Avatar / profile button */}
+          <button
+            onClick={() => setProfileOpen(true)}
+            className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white ${
+              currentUser ? 'bg-blue-600' : 'bg-gray-300'
+            }`}
+            title={currentUser ? currentUser.display_name || currentUser.email : 'התחבר'}
+          >
+            {currentUser
+              ? (currentUser.display_name || currentUser.email)[0].toUpperCase()
+              : '👤'
+            }
+          </button>
+        </div>
+      </header>
 
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
         {messages.map((msg, index) => (
           <div
             key={index}
-            className={`flex ${msg.role === 'user' ? 'justify-start' : 'justify-end'}`}
+            className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
           >
-            <div className={`max-w-[85%] flex flex-col gap-2 ${msg.role === 'user' ? 'items-start' : 'items-end'}`}>
-
-              {/* Bubble */}
+            <div
+              className={`flex flex-col gap-2 ${
+                msg.role === 'user'
+                  ? 'items-end ml-auto max-w-[80%]'
+                  : 'items-start mr-auto max-w-[85%]'
+              }`}
+            >
+              {/* Text bubble */}
               <div
-                className={`px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words ${
+                className={`px-4 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words ${
                   msg.role === 'user'
-                    ? 'bg-blue-500 text-white rounded-tl-2xl rounded-b-2xl'
-                    : 'bg-gray-100 text-gray-800 rounded-tr-2xl rounded-b-2xl'
+                    ? 'bg-blue-600 text-white rounded-2xl rounded-tr-sm'
+                    : 'bg-white border border-gray-100 shadow-sm text-gray-800 rounded-2xl rounded-tl-sm'
                 }`}
               >
                 {msg.content}
 
                 {/* GPS prompt button — inline inside assistant bubble */}
                 {msg.role === 'assistant' && msg.response?.needs_location && (
-                  <div className="mt-2">
-                    <button
-                      onClick={requestGPS}
-                      className="inline-flex items-center gap-1 bg-green-500 text-white text-xs font-medium px-3 py-1.5 rounded-full hover:bg-green-600 transition-colors"
-                    >
-                      <span>📍</span>
-                      <span>שתף מיקום</span>
-                    </button>
-                    {sessionContext.user_lat != null && (
-                      <span className="mr-2 text-xs text-green-700">מיקום התקבל</span>
+                  <div className="mt-3">
+                    {currentSession.user_lat != null ? (
+                      <span className="text-xs text-green-700 flex items-center gap-1">
+                        <span>✓</span>
+                        <span>מיקום התקבל — שולח שוב...</span>
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => requestGPS(lastMessage)}
+                        className="inline-flex items-center gap-1 bg-blue-600 text-white text-xs font-medium px-3 py-1.5 rounded-full hover:bg-blue-700 transition-colors"
+                      >
+                        <span>📍</span>
+                        <span>שתף מיקום</span>
+                      </button>
                     )}
                   </div>
                 )}
@@ -143,52 +261,145 @@ export function ChatInterface() {
                 </span>
               )}
 
-              {/* Product results */}
+              {/* Product results grid */}
               {msg.role === 'assistant' &&
                 msg.response?.product_results &&
                 msg.response.product_results.length > 0 && (
                   <div className="w-full space-y-3">
-                    {/* Map for product results that have coordinates */}
-                    {msg.response.product_results.some((r: ProductResult) => r.store.lat != null) && (
-                      <StoreMap results={msg.response.product_results} mode="product" />
-                    )}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {msg.response.product_results.map((result: ProductResult, i: number) => (
-                        <ResultCard key={i} result={result} />
+                    <div className="flex overflow-x-auto gap-3 pb-2 sm:grid sm:grid-cols-3 sm:overflow-x-visible">
+                      {msg.response.product_results.slice(0, 6).map((result: ProductResult, i: number) => (
+                        <div key={i} className="shrink-0 w-48 sm:w-auto">
+                          <ResultCard result={result} />
+                        </div>
                       ))}
                     </div>
+                    {(() => {
+                      const totalAvailable = msg.response.total_available ?? msg.response.product_results.length
+                      return totalAvailable > 6 ? (
+                        <p className="text-xs text-gray-400 text-center mt-1">
+                          ועוד {totalAvailable - 6} תוצאות נוספות
+                        </p>
+                      ) : null
+                    })()}
+                    {msg.response.product_results.some((r: ProductResult) => r.store.lat != null) && (
+                      <div className="rounded-xl overflow-hidden" style={{ height: '220px' }}>
+                        <StoreMap results={msg.response.product_results} mode="product" />
+                      </div>
+                    )}
                   </div>
                 )}
 
-              {/* Store results */}
+              {/* Store results grid */}
               {msg.role === 'assistant' &&
                 msg.response?.store_results &&
                 msg.response.store_results.length > 0 && (
                   <div className="w-full space-y-3">
-                    {/* Map for store results that have coordinates */}
-                    {msg.response.store_results.some((s: StoreResult) => s.lat != null) && (
-                      <StoreMap results={msg.response.store_results} mode="store" />
-                    )}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {msg.response.store_results.map((store: StoreResult, i: number) => (
-                        <StoreCard key={store.id ?? i} result={store} />
+                    <div className="flex overflow-x-auto gap-3 pb-2 sm:grid sm:grid-cols-3 sm:overflow-x-visible">
+                      {msg.response.store_results.slice(0, 6).map((store: StoreResult, i: number) => (
+                        <div key={store.id ?? i} className="shrink-0 w-48 sm:w-auto">
+                          <StoreCard result={store} />
+                        </div>
                       ))}
                     </div>
+                    {msg.response.store_results.length > 6 && (
+                      <p className="text-xs text-blue-600 text-center">
+                        ועוד {msg.response.store_results.length - 6} חנויות
+                      </p>
+                    )}
+                    {msg.response.store_results.some((s: StoreResult) => s.lat != null) && (
+                      <div className="rounded-xl overflow-hidden" style={{ height: '220px' }}>
+                        <StoreMap results={msg.response.store_results} mode="store" />
+                      </div>
+                    )}
                   </div>
                 )}
-
             </div>
           </div>
         ))}
 
-        {/* Loading indicator — animated "..." bubble */}
+        {/* Registration prompt — after 3rd message */}
+        {showRegPrompt && !currentUser && (
+          <div className="flex justify-start mb-4">
+            <div className="max-w-[85%] bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-sm px-4 py-3">
+              <p className="text-sm text-gray-700 mb-3">רוצה שאזכור את ההעדפות שלך לפעם הבאה? 📝</p>
+              {!showRegForm ? (
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setShowRegForm(true)}
+                    className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-full"
+                  >
+                    צור חשבון
+                  </button>
+                  <button
+                    onClick={() => { setShowRegPrompt(false); dismissRegistration(); }}
+                    className="px-3 py-1.5 bg-gray-100 text-gray-600 text-xs rounded-full"
+                  >
+                    המשך בלי חשבון
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleRegisterSubmit} className="space-y-2">
+                  <input
+                    value={regName}
+                    onChange={e => setRegName(e.target.value)}
+                    placeholder="שם (אופציונלי)"
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-right"
+                    dir="rtl"
+                  />
+                  <input
+                    required
+                    type="email"
+                    value={regEmail}
+                    onChange={e => setRegEmail(e.target.value)}
+                    placeholder="אימייל"
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-right"
+                    dir="rtl"
+                  />
+                  <input
+                    required
+                    type="password"
+                    value={regPassword}
+                    onChange={e => setRegPassword(e.target.value)}
+                    placeholder="סיסמה"
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-right"
+                    dir="rtl"
+                  />
+                  {regError && <p className="text-red-500 text-xs text-right">{regError}</p>}
+                  <button
+                    type="submit"
+                    className="w-full py-1.5 bg-blue-600 text-white text-sm rounded-lg"
+                  >
+                    הירשם
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Suggestion chips — first load only */}
+        {chipsVisible && messages.length === 1 && (
+          <div className="flex flex-wrap gap-2 justify-center mt-2">
+            {SUGGESTION_CHIPS.map((chip) => (
+              <button
+                key={chip}
+                onClick={() => handleChipClick(chip)}
+                className="bg-white border border-gray-200 text-gray-700 text-sm px-4 py-2 rounded-full shadow-sm hover:border-blue-400 hover:text-blue-600 transition-colors"
+              >
+                {chip}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Loading indicator */}
         {loading && (
-          <div className="flex justify-end">
-            <div className="bg-gray-100 text-gray-500 rounded-tr-2xl rounded-b-2xl px-5 py-3 text-sm">
-              <span className="inline-flex gap-1">
-                <span className="animate-bounce" style={{ animationDelay: '0ms' }}>•</span>
-                <span className="animate-bounce" style={{ animationDelay: '150ms' }}>•</span>
-                <span className="animate-bounce" style={{ animationDelay: '300ms' }}>•</span>
+          <div className="flex justify-start">
+            <div className="bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-sm px-5 py-3">
+              <span className="inline-flex gap-1 items-center">
+                <span className="animate-bounce text-gray-400 text-lg" style={{ animationDelay: '0ms' }}>•</span>
+                <span className="animate-bounce text-gray-400 text-lg" style={{ animationDelay: '150ms' }}>•</span>
+                <span className="animate-bounce text-gray-400 text-lg" style={{ animationDelay: '300ms' }}>•</span>
               </span>
             </div>
           </div>
@@ -199,17 +410,17 @@ export function ChatInterface() {
       </div>
 
       {/* Location status bar */}
-      {sessionContext.location_label && (
-        <div className="px-4 py-1.5 bg-green-50 border-t border-green-100 flex items-center justify-between text-xs text-green-700">
-          <span>📍 {sessionContext.location_label}</span>
+      {currentSession.location_label && (
+        <div className="px-4 py-1.5 bg-green-50 border-t border-green-100 flex items-center justify-between text-xs text-green-700 shrink-0">
+          <span>📍 {currentSession.location_label}</span>
           <button
             onClick={() =>
-              setSessionContext((prev) => ({
-                ...prev,
+              onLocationUpdate({
+                ...currentSession,
                 user_lat: null,
                 user_lng: null,
                 location_label: null,
-              }))
+              })
             }
             className="text-gray-400 hover:text-red-500 transition-colors mr-2"
             aria-label="נקה מיקום"
@@ -219,8 +430,8 @@ export function ChatInterface() {
         </div>
       )}
 
-      {/* Input area */}
-      <div className="bg-white border-t border-gray-200 shadow-[0_-2px_8px_rgba(0,0,0,0.06)] px-4 py-3">
+      {/* Fixed input bar (64px) */}
+      <div className="bg-white border-t border-gray-200 shadow-[0_-2px_8px_rgba(0,0,0,0.06)] px-4 py-3 shrink-0" style={{ minHeight: '64px' }}>
         <div className="flex items-center gap-2 max-w-3xl mx-auto">
           <button
             onClick={handleSend}
@@ -232,24 +443,43 @@ export function ChatInterface() {
               xmlns="http://www.w3.org/2000/svg"
               viewBox="0 0 24 24"
               fill="currentColor"
-              className="w-5 h-5 rotate-180"
+              className="w-5 h-5"
             >
-              <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
+              <path
+                fillRule="evenodd"
+                d="M11.47 2.47a.75.75 0 011.06 0l7.5 7.5a.75.75 0 11-1.06 1.06l-6.22-6.22V21a.75.75 0 01-1.5 0V4.81l-6.22 6.22a.75.75 0 11-1.06-1.06l7.5-7.5z"
+                clipRule="evenodd"
+              />
             </svg>
           </button>
-          <input
-            ref={inputRef}
-            type="text"
+          <textarea
+            ref={textareaRef}
             dir="rtl"
-            placeholder="שאל אותי הכל על BuyMe..."
+            rows={1}
+            placeholder="שאל אותי על BuyMe..."
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={loading}
-            className="flex-1 border border-gray-200 rounded-full px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-300 disabled:opacity-60 transition"
+            className="flex-1 resize-none border border-gray-200 rounded-2xl px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-300 disabled:opacity-60 transition"
+            style={{ maxHeight: '120px', overflowY: 'auto' }}
           />
         </div>
       </div>
+
+      {/* Profile Drawer */}
+      {profileOpen && (
+        <ProfileDrawer
+          user={currentUser}
+          onClose={() => setProfileOpen(false)}
+          onLogout={() => {
+            clearAuth()
+            setCurrentUser(null)
+            setProfileOpen(false)
+            setMessages([WELCOME_MESSAGE(null)])
+          }}
+        />
+      )}
     </div>
   )
 }

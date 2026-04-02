@@ -11,16 +11,19 @@ Tables:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from enum import Enum as PyEnum
 from typing import Optional
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -242,9 +245,18 @@ class StoreProduct(BaseMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Product image URL scraped from the store page
+    image_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    image_url_updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Relationships
     product: Mapped["Product"] = relationship("Product", back_populates="store_products")
     store: Mapped["Store"] = relationship("Store", back_populates="store_products")
+    price_changes: Mapped[list["PriceChange"]] = relationship(
+        "PriceChange", back_populates="store_product", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<StoreProduct product={self.product_id} store={self.store_id} price={self.price}>"
@@ -302,3 +314,368 @@ class ScrapeRun(BaseMixin, Base):
 
     def __repr__(self) -> str:
         return f"<ScrapeRun type={self.run_type} status={self.status} items={self.items_scraped}>"
+
+
+# ---------------------------------------------------------------------------
+# PriceChange  (history of price / availability changes per StoreProduct)
+# ---------------------------------------------------------------------------
+
+class PriceChange(Base):
+    """
+    Records every price or availability change detected for a StoreProduct.
+
+    Written by the scheduler's detect_price_changes task after each scrape.
+    Enables "price dropped since last week" features and scrape freshness monitoring.
+    """
+
+    __tablename__ = "price_changes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    store_product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("store_products.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    old_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
+    new_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
+    old_availability: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    new_availability: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # Relationship
+    store_product: Mapped["StoreProduct"] = relationship(
+        "StoreProduct", back_populates="price_changes"
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<PriceChange store_product={self.store_product_id} "
+            f"old={self.old_price} new={self.new_price}>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# User  (registered user account — anonymous users are never stored)
+# ---------------------------------------------------------------------------
+
+class User(Base):
+    """
+    A registered FindMe user.
+
+    Anonymous users are never stored in the DB — they use session state only.
+    Registration is optional; the app works fully without an account.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    display_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    google_id: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Relationships
+    locations: Mapped[list["UserLocation"]] = relationship(
+        "UserLocation", back_populates="user", cascade="all, delete-orphan"
+    )
+    voucher_cards: Mapped[list["UserVoucherCard"]] = relationship(
+        "UserVoucherCard", back_populates="user", cascade="all, delete-orphan"
+    )
+    preferences: Mapped[list["UserPreference"]] = relationship(
+        "UserPreference", back_populates="user", cascade="all, delete-orphan"
+    )
+    implicit_signals: Mapped[list["UserImplicitSignal"]] = relationship(
+        "UserImplicitSignal", back_populates="user", cascade="all, delete-orphan"
+    )
+    inferred_attributes: Mapped[list["UserInferredAttribute"]] = relationship(
+        "UserInferredAttribute", back_populates="user", cascade="all, delete-orphan"
+    )
+    search_history: Mapped[list["UserSearchHistory"]] = relationship(
+        "UserSearchHistory", back_populates="user", cascade="all, delete-orphan"
+    )
+    favorites: Mapped[list["UserFavoriteStore"]] = relationship(
+        "UserFavoriteStore", back_populates="user", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self) -> str:
+        return f"<User {self.email!r} active={self.is_active}>"
+
+
+# ---------------------------------------------------------------------------
+# UserLocation  (saved named locations per user)
+# ---------------------------------------------------------------------------
+
+class UserLocation(Base):
+    """A saved named location for a user (e.g. "בית", "עבודה")."""
+
+    __tablename__ = "user_locations"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    label: Mapped[str] = mapped_column(String(100), nullable=False)
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lng: Mapped[float] = mapped_column(Float, nullable=False)
+    address: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # Relationship
+    user: Mapped["User"] = relationship("User", back_populates="locations")
+
+    def __repr__(self) -> str:
+        return f"<UserLocation {self.label!r} user={self.user_id}>"
+
+
+# ---------------------------------------------------------------------------
+# UserVoucherCard  (voucher cards held by a user)
+# ---------------------------------------------------------------------------
+
+class UserVoucherCard(Base):
+    """A voucher card (BuyMe, תו הזהב, etc.) held by a registered user."""
+
+    __tablename__ = "user_voucher_cards"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    voucher_network: Mapped[str] = mapped_column(String(50), nullable=False)
+    nickname: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    balance: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
+    expiry_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # Relationship
+    user: Mapped["User"] = relationship("User", back_populates="voucher_cards")
+
+    def __repr__(self) -> str:
+        return f"<UserVoucherCard {self.voucher_network!r} user={self.user_id}>"
+
+
+# ---------------------------------------------------------------------------
+# UserPreference  (explicit user preferences — key/value pairs)
+# ---------------------------------------------------------------------------
+
+class UserPreference(Base):
+    """
+    Explicit user preference stored as a key/value pair.
+
+    Supported keys: default_max_price, preferred_cities, preferred_categories,
+    show_online_only, default_radius_km, language.
+    """
+
+    __tablename__ = "user_preferences"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    key: Mapped[str] = mapped_column(String(100), primary_key=True, nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # Relationship
+    user: Mapped["User"] = relationship("User", back_populates="preferences")
+
+    def __repr__(self) -> str:
+        return f"<UserPreference {self.key!r}={self.value!r} user={self.user_id}>"
+
+
+# ---------------------------------------------------------------------------
+# UserImplicitSignal  (behavioral signals learned from usage)
+# ---------------------------------------------------------------------------
+
+class UserImplicitSignal(Base):
+    """
+    Implicit behavioral signal learned from the user's search behavior.
+
+    Signal types: city_search, category_click, store_visit, price_range.
+    Weight increases with repetition; used to personalize search results.
+    """
+
+    __tablename__ = "user_implicit_signals"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    signal_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    signal_value: Mapped[str] = mapped_column(String(255), nullable=False)
+    weight: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    # Relationship
+    user: Mapped["User"] = relationship("User", back_populates="implicit_signals")
+
+    def __repr__(self) -> str:
+        return (
+            f"<UserImplicitSignal {self.signal_type!r}={self.signal_value!r} "
+            f"weight={self.weight} user={self.user_id}>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# UserInferredAttribute  (LLM-inferred user attributes — transparent + deletable)
+# ---------------------------------------------------------------------------
+
+class UserInferredAttribute(Base):
+    """
+    An attribute inferred by the LLM from the user's conversation and behavior.
+
+    PRIVACY: Users can view all inferred attributes and delete any of them.
+    Attributes with confidence < 0.5 are stored but never used for search.
+    Only boosts relevance — never restricts results.
+    """
+
+    __tablename__ = "user_inferred_attributes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    attribute: Mapped[str] = mapped_column(String(100), nullable=False)
+    value: Mapped[str] = mapped_column(String(255), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
+    source: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    inferred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_updated: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    is_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Relationship
+    user: Mapped["User"] = relationship("User", back_populates="inferred_attributes")
+
+    def __repr__(self) -> str:
+        return (
+            f"<UserInferredAttribute {self.attribute!r}={self.value!r} "
+            f"confidence={self.confidence} user={self.user_id}>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# UserSearchHistory  (full search history per user)
+# ---------------------------------------------------------------------------
+
+class UserSearchHistory(Base):
+    """
+    A record of every search performed by a registered user.
+
+    Used by the LLM to reference past searches in conversation context.
+    Users can view and clear their search history.
+    """
+
+    __tablename__ = "user_search_history"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    intent: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    resolved_query: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    city_used: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    result_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    top_result_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    voucher_network: Mapped[str] = mapped_column(
+        String(50), default="buyme", nullable=False
+    )
+    searched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # Relationship
+    user: Mapped["User"] = relationship("User", back_populates="search_history")
+
+    def __repr__(self) -> str:
+        return f"<UserSearchHistory message={self.message[:40]!r} user={self.user_id}>"
+
+
+# ---------------------------------------------------------------------------
+# UserFavoriteStore  (saved favorite stores per user)
+# ---------------------------------------------------------------------------
+
+class UserFavoriteStore(Base):
+    """A store saved as a favorite by a registered user."""
+
+    __tablename__ = "user_favorite_stores"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    store_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("stores.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    saved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    note: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # Relationships
+    user: Mapped["User"] = relationship("User", back_populates="favorites")
+    store: Mapped["Store"] = relationship("Store")
+
+    def __repr__(self) -> str:
+        return f"<UserFavoriteStore user={self.user_id} store={self.store_id}>"
