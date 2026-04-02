@@ -136,3 +136,49 @@ class StoreListResponse(BaseModel):
     total: int = Field(..., ge=0, description="Total number of stores matching the query")
     page: int = Field(..., ge=1, description="Current page number (1-indexed)")
     page_size: int = Field(..., ge=1, description="Number of stores per page")
+
+
+# ---------------------------------------------------------------------------
+# Store search
+# ---------------------------------------------------------------------------
+
+
+class StoreSearchRequest(BaseModel):
+    """Request payload for POST /stores/search."""
+
+    query: Optional[str] = Field(None, description="Search store name (Hebrew or English)")
+    store_type: Optional[str] = Field(
+        None, description="'restaurant', 'retail', or None for all"
+    )
+    location: Optional[LocationFilter] = Field(
+        None, description="Center point + radius_km for geo filter"
+    )
+    page: int = Field(1, ge=1)
+    page_size: int = Field(40, ge=1, le=100)
+
+
+class StoreResult(BaseModel):
+    """A single store returned by POST /stores/search."""
+
+    id: str
+    name_he: str
+    name_en: Optional[str]
+    buyme_url: Optional[str]
+    buyme_category: str
+    address: Optional[str]
+    city: Optional[str]
+    lat: Optional[float]
+    lng: Optional[float]
+    distance_km: Optional[float]
+    is_online: bool
+    product_count: int
+
+
+class StoreSearchResponse(BaseModel):
+    """Response payload for POST /stores/search."""
+
+    stores: list[StoreResult] = Field(..., description="Page of matching stores")
+    total: int = Field(..., ge=0, description="Number of stores on this page")
+    total_available: int = Field(..., ge=0, description="Total matching stores across all pages")
+    page: int = Field(..., ge=1, description="Current page number (1-indexed)")
+    page_size: int = Field(..., ge=1, description="Results per page")

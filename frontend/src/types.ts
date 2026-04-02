@@ -8,6 +8,37 @@ export interface SearchFilters {
   page_size: number
 }
 
+export interface StoreResult {
+  id: string
+  name_he: string
+  name_en: string | null
+  buyme_url: string | null
+  buyme_category: string
+  address: string | null
+  city: string | null
+  lat: number | null
+  lng: number | null
+  distance_km: number | null
+  is_online: boolean
+  product_count: number
+}
+
+export interface StoreSearchRequest {
+  query: string
+  store_type: 'restaurant' | 'retail' | null
+  location: { lat: number; lng: number; radius_km: number } | null
+  page: number
+  page_size: number
+}
+
+export interface StoreSearchResponse {
+  stores: StoreResult[]
+  total: number
+  total_available: number
+  page: number
+  page_size: number
+}
+
 export interface StoreInfo {
   id: string
   name_he: string

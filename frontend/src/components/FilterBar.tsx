@@ -65,7 +65,7 @@ export function FilterBar({ filters, onChange }: Props) {
       {/* Clear filters */}
       {(filters.online_only || filters.max_price != null || filters.city || filters.brand) && (
         <button
-          onClick={() => onChange({ online_only: false, max_price: null, city: null, brand: null, min_match_score: 0.3 })}
+          onClick={() => onChange({ online_only: false, max_price: null, city: null, brand: null, min_match_score: 0.3, page: filters.page, page_size: filters.page_size })}
           className="text-gray-400 hover:text-red-500 transition-colors px-2"
         >
           ✕ נקה פילטרים
