@@ -1,0 +1,7 @@
+{
+  "project_name": "FindMe",
+  "default_model": "gemini-2.5-flash",
+  "auto_save_memory": true,
+  "git_commit_style": "conventional",
+  "log_level": "info"
+}
