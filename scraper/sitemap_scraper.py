@@ -443,6 +443,7 @@ def parse_product_from_json_ld(
     - ``availability``: ``offers.availability`` contains ``"InStock"``
     - ``product_url``: ``url`` or ``page_url`` fallback
     - ``category_path``: ``category`` if present
+    - ``image_url``: ``image`` (string or list)
 
     Args:
         json_ld:  JSON-LD Product dict extracted from the page HTML.
@@ -460,6 +461,17 @@ def parse_product_from_json_ld(
     else:
         brand = None
 
+    # Image: may be a string, a list of strings, or an ImageObject
+    image_raw: Any = json_ld.get("image")
+    image_url: Optional[str] = None
+    if isinstance(image_raw, str):
+        image_url = image_raw
+    elif isinstance(image_raw, list) and image_raw:
+        first = image_raw[0]
+        image_url = first if isinstance(first, str) else first.get("url")
+    elif isinstance(image_raw, dict):
+        image_url = image_raw.get("url")
+
     offers = json_ld.get("offers")
 
     return {
@@ -470,6 +482,7 @@ def parse_product_from_json_ld(
         "availability": _extract_availability_from_offers(offers),
         "product_url": (json_ld.get("url") or page_url).strip(),
         "category_path": (json_ld.get("category") or None),
+        "image_url": image_url,
     }
 
 
@@ -560,12 +573,13 @@ async def upsert_store_product(
     availability: bool,
     product_url: Optional[str],
     raw_name: Optional[str],
+    image_url: Optional[str] = None,
 ) -> None:
     """
     Insert or update a row in the ``store_products`` table.
 
     The unique constraint is on ``(product_id, store_id, product_url)``.
-    On conflict, ``price``, ``availability``, and ``raw_name`` are updated.
+    On conflict, ``price``, ``availability``, ``raw_name``, and ``image_url`` are updated.
 
     Args:
         conn:         asyncpg connection.
@@ -576,19 +590,28 @@ async def upsert_store_product(
         availability: Whether the product is currently in stock.
         product_url:  Full product page URL on the store's site.
         raw_name:     Pre-normalisation product name (for re-processing).
+        image_url:    Primary product image URL (may be None).
     """
     await conn.execute(
         """
         INSERT INTO store_products (id, product_id, store_id, price, currency,
                                     availability, product_url, raw_name,
+                                    image_url, image_url_updated_at,
                                     created_at, updated_at)
-        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, now(), now())
+        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7,
+                $8, CASE WHEN $8 IS NOT NULL THEN now() ELSE NULL END,
+                now(), now())
         ON CONFLICT ON CONSTRAINT uq_store_product_url
         DO UPDATE SET
-            price        = EXCLUDED.price,
-            availability = EXCLUDED.availability,
-            raw_name     = EXCLUDED.raw_name,
-            updated_at   = now()
+            price                = EXCLUDED.price,
+            availability         = EXCLUDED.availability,
+            raw_name             = EXCLUDED.raw_name,
+            image_url            = COALESCE(EXCLUDED.image_url, store_products.image_url),
+            image_url_updated_at = CASE
+                WHEN EXCLUDED.image_url IS NOT NULL THEN now()
+                ELSE store_products.image_url_updated_at
+            END,
+            updated_at           = now()
         """,
         product_id,
         store_id,
@@ -597,6 +620,7 @@ async def upsert_store_product(
         availability,
         product_url,
         raw_name,
+        image_url,
     )
 
 
@@ -969,6 +993,7 @@ async def scrape_store(
                     availability=product_data.get("availability", True),
                     product_url=product_data.get("product_url"),
                     raw_name=canonical_name,
+                    image_url=product_data.get("image_url"),
                 )
 
     logger.info(

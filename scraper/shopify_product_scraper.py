@@ -390,12 +390,14 @@ async def upsert_store_product(
     availability: bool,
     product_url: Optional[str],
     raw_name: Optional[str],
+    image_url: Optional[str] = None,
 ) -> None:
     """
     Insert or update a row in the ``store_products`` table.
 
     The unique constraint is on ``(product_id, store_id, product_url)``.
-    On conflict, ``price``, ``availability``, and ``raw_name`` are updated.
+    On conflict, ``price``, ``availability``, ``raw_name``, and ``image_url``
+    are updated.
 
     Args:
         conn:         asyncpg connection.
@@ -405,19 +407,28 @@ async def upsert_store_product(
         availability: Whether the variant is currently in stock.
         product_url:  Full product page URL on the store's site.
         raw_name:     Pre-normalization product title (for re-processing).
+        image_url:    Primary product image URL (may be None).
     """
     await conn.execute(
         """
         INSERT INTO store_products (id, product_id, store_id, price, currency,
                                     availability, product_url, raw_name,
+                                    image_url, image_url_updated_at,
                                     created_at, updated_at)
-        VALUES (gen_random_uuid(), $1, $2, $3, 'ILS', $4, $5, $6, now(), now())
+        VALUES (gen_random_uuid(), $1, $2, $3, 'ILS', $4, $5, $6,
+                CAST($7 AS text), CASE WHEN $7 IS NOT NULL THEN now() ELSE NULL END,
+                now(), now())
         ON CONFLICT ON CONSTRAINT uq_store_product_url
         DO UPDATE SET
-            price        = EXCLUDED.price,
-            availability = EXCLUDED.availability,
-            raw_name     = EXCLUDED.raw_name,
-            updated_at   = now()
+            price                = EXCLUDED.price,
+            availability         = EXCLUDED.availability,
+            raw_name             = EXCLUDED.raw_name,
+            image_url            = COALESCE(EXCLUDED.image_url, store_products.image_url),
+            image_url_updated_at = CASE
+                WHEN EXCLUDED.image_url IS NOT NULL THEN now()
+                ELSE store_products.image_url_updated_at
+            END,
+            updated_at           = now()
         """,
         product_id,
         store_id,
@@ -425,6 +436,7 @@ async def upsert_store_product(
         availability,
         product_url,
         raw_name,
+        image_url,
     )
 
 
@@ -662,6 +674,7 @@ async def scrape_store(
                 availability=fields["availability"],
                 product_url=fields["product_url"],
                 raw_name=fields["title"],
+                image_url=fields["image_url"],
             )
 
     logger.info(

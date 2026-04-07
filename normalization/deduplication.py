@@ -457,6 +457,7 @@ async def deduplicate_products(
     batch_size: int = 10_000,
     similarity_threshold: float = 0.95,
     dry_run: bool = False,
+    limit: Optional[int] = None,
 ) -> dict:
     """Run bulk deduplication against the products table using stored pgvector embeddings.
 
@@ -480,6 +481,7 @@ async def deduplicate_products(
             (default 0.95 — stricter than the real-time engine to avoid false positives
             in bulk mode).
         dry_run: If True, report findings but do not write any changes to the DB.
+        limit: Max products to process as 'reference' items (for testing/partial runs).
 
     Returns:
         Dict with keys ``groups_found``, ``products_merged``, ``status``.
@@ -495,6 +497,7 @@ async def deduplicate_products(
 
     groups_found = 0
     products_merged = 0
+    processed_count = 0
 
     try:
         # Check if is_duplicate and canonical_product_id columns exist
@@ -528,10 +531,11 @@ async def deduplicate_products(
         )
         logger.info(
             "deduplicate_products: %d products with embeddings to process "
-            "(threshold=%.2f, dry_run=%s)",
+            "(threshold=%.2f, dry_run=%s, limit=%s)",
             total_with_embeddings,
             similarity_threshold,
             dry_run,
+            limit,
         )
 
         # Track which product IDs have already been assigned to a group
@@ -540,6 +544,13 @@ async def deduplicate_products(
         offset = 0
         while True:
             # Load a batch of non-duplicate products
+            current_batch_size = batch_size
+            if limit is not None:
+                current_batch_size = min(batch_size, limit - processed_count)
+
+            if current_batch_size <= 0:
+                break
+
             rows = await conn.fetch(
                 """
                 SELECT id, canonical_name, brand
@@ -549,14 +560,15 @@ async def deduplicate_products(
                 ORDER BY id
                 LIMIT $1 OFFSET $2
                 """,
-                batch_size,
+                current_batch_size,
                 offset,
             )
             if not rows:
                 break
-            offset += batch_size
+            offset += len(rows)
 
             for row in rows:
+                processed_count += 1
                 product_id = str(row["id"])
                 if product_id in assigned:
                     continue
@@ -612,13 +624,20 @@ async def deduplicate_products(
 
                 duplicate_ids = [gid for gid in group_ids if gid != canonical_id]
 
-                logger.debug(
-                    "Group %d: canonical=%s (%d duplicates): %s",
+                logger.info(
+                    "Group %d: canonical='%s' (id=%s)",
                     groups_found,
+                    next((r["canonical_name"] for r in ([row] + list(dups)) if str(r["id"]) == canonical_id), "Unknown"),
                     canonical_id,
-                    len(duplicate_ids),
-                    [str(d["canonical_name"]) for d in dups[:3]],
                 )
+                for dup in dups:
+                    if str(dup["id"]) in duplicate_ids:
+                        logger.info(
+                            "  → Duplicate: '%s' (id=%s, dist=%.4f)",
+                            dup["canonical_name"],
+                            dup["id"],
+                            dup["distance"],
+                        )
 
                 if not dry_run:
                     async with conn.transaction():
@@ -658,7 +677,8 @@ async def deduplicate_products(
                     assigned.add(gid)
 
             logger.info(
-                "Progress: offset=%d, groups_found=%d, products_merged=%d",
+                "Progress: processed=%d, offset=%d, groups_found=%d, products_merged=%d",
+                processed_count,
                 offset,
                 groups_found,
                 products_merged,
@@ -724,6 +744,13 @@ if __name__ == "__main__":
         help="Number of products to load per batch (default: 10000).",
     )
     parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Max products to process (default: all).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         default=False,
@@ -736,5 +763,6 @@ if __name__ == "__main__":
             batch_size=args.batch_size,
             similarity_threshold=args.threshold,
             dry_run=args.dry_run,
+            limit=args.limit,
         )
     )

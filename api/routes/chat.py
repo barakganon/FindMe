@@ -28,6 +28,9 @@ from redis.asyncio import Redis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
+from starlette.requests import Request
+
+from api.main import limiter
 
 from api.auth import get_optional_user
 from api.cache import get_intent_cache, set_intent_cache
@@ -515,7 +518,9 @@ async def _run_store_search(
 
 
 @router.post("/chat", response_model=ChatResponse)
+@limiter.limit("20/minute")
 async def chat(
+    http_request: Request,
     request: ChatRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     ai: Annotated[AsyncOpenAI, Depends(get_ai_client)],

@@ -141,29 +141,33 @@ class RawStore:
 
     @property
     def buyme_category(self) -> str:
-        """Map first BuyMe category to our internal enum value."""
+        """Map first BuyMe category to our internal primary enum value (legacy)."""
         cat = (self.categories[0] if self.categories else "").strip()
         _MAP = {
             "מסעדות וקולינריה": "restaurant",
-            "ספא וימי כיף":     "retail",
-            "מלונות ונופש":     "retail",
-            "חוויות":           "retail",
-            "סדנאות והעשרה":    "retail",
-            "לגוף ולנפש":       "retail",
-            "תרבות ופנאי":      "retail",
+            "ספא וימי כיף":     "spa",
+            "מלונות ונופש":     "hotel",
+            "חוויות":           "leisure",
+            "סדנאות והעשרה":    "leisure",
+            "לגוף ולנפש":       "spa",
+            "תרבות ופנאי":      "leisure",
             "לבית":             "retail",
             "תינוקות וילדים":   "retail",
             "טיפוח ויופי":      "retail",
             "אופנה ושופינג":    "retail",
         }
-        if self.is_online:
-            return "online"
         return _MAP.get(cat, "other")
+
+    @property
+    def redemption_details_url(self) -> Optional[str]:
+        """Specific link for voucher redemption details."""
+        return f"{BUYME_BASE_URL}/brands/{self.store_id}?showRedemption=true"
 
     def to_dict(self) -> dict:
         """Serialize to a plain dict including computed properties."""
         d = asdict(self)
         d["buyme_category"] = self.buyme_category
+        d["redemption_details_url"] = self.redemption_details_url
         d["is_online"] = self.is_online
         return d
 
@@ -417,18 +421,20 @@ async def upsert_stores_to_db(stores: list[RawStore], session: object) -> int:
 
     rows = [
         {
-            "name_he":         s.name_he,
-            "name_en":         None,  # API does not separate Hebrew/English name
-            "buyme_url":       s.buyme_url,
-            "store_url":       s.site_url,
-            "buyme_category":  s.buyme_category,
-            "is_online":       s.is_online,
-            "address":         s.address,
-            "city":            s.regions[0] if s.regions else None,
-            "lat":             None,   # not available in this API; enrich separately
-            "lng":             None,
-            "scrape_status":   "success",
-            "last_scraped_at": datetime.now(timezone.utc),
+            "name_he":                s.name_he,
+            "name_en":                None,
+            "buyme_url":              s.buyme_url,
+            "store_url":              s.site_url,
+            "buyme_category":         s.buyme_category,
+            "buyme_categories":       s.categories,
+            "redemption_details_url": s.redemption_details_url,
+            "is_online":              s.is_online,
+            "address":                s.address,
+            "city":                   s.regions[0] if s.regions else None,
+            "lat":                    None,
+            "lng":                    None,
+            "scrape_status":          "success",
+            "last_scraped_at":        datetime.now(timezone.utc),
         }
         for s in stores
     ]
@@ -437,14 +443,16 @@ async def upsert_stores_to_db(stores: list[RawStore], session: object) -> int:
     stmt = stmt.on_conflict_do_update(
         index_elements=["buyme_url"],
         set_={
-            "name_he":         stmt.excluded.name_he,
-            "store_url":       stmt.excluded.store_url,
-            "buyme_category":  stmt.excluded.buyme_category,
-            "is_online":       stmt.excluded.is_online,
-            "address":         stmt.excluded.address,
-            "city":            stmt.excluded.city,
-            "scrape_status":   stmt.excluded.scrape_status,
-            "last_scraped_at": stmt.excluded.last_scraped_at,
+            "name_he":                stmt.excluded.name_he,
+            "store_url":              stmt.excluded.store_url,
+            "buyme_category":         stmt.excluded.buyme_category,
+            "buyme_categories":       stmt.excluded.buyme_categories,
+            "redemption_details_url": stmt.excluded.redemption_details_url,
+            "is_online":              stmt.excluded.is_online,
+            "address":                stmt.excluded.address,
+            "city":                   stmt.excluded.city,
+            "scrape_status":          stmt.excluded.scrape_status,
+            "last_scraped_at":        stmt.excluded.last_scraped_at,
         },
     )
     result = await session.execute(stmt)
@@ -458,6 +466,11 @@ async def upsert_stores_to_db(stores: list[RawStore], session: object) -> int:
 
 async def _main() -> None:
     """Run the scraper from the command line and print a summary."""
+    import os
+    from dotenv import load_dotenv
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+
+    load_dotenv()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s — %(message)s",
@@ -465,6 +478,16 @@ async def _main() -> None:
 
     scraper = BuyMeStoreScraper(save_raw=True)
     stores = await scraper.run()
+
+    db_url = os.getenv("DATABASE_URL", "postgresql+asyncpg://localhost/buyme_search")
+    engine = create_async_engine(db_url.replace("postgresql://", "postgresql+asyncpg://"))
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with factory() as session:
+        updated = await upsert_stores_to_db(stores, session)
+        logger.info("Upserted %d stores to DB.", updated)
+
+    await engine.dispose()
 
     print(f"\nDone. {len(stores)} unique stores scraped.\n")
     print(f"{'Name':<35} {'Voucher types':<45} {'Category':<20} {'Site URL'}")

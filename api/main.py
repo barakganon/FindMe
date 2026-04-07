@@ -3,6 +3,8 @@ api/main.py — FastAPI application factory for BuyMe Smart Search API.
 
 Configures:
     - CORS middleware (origins from CORS_ORIGINS env var)
+    - Rate limiting via slowapi
+    - Security headers middleware
     - /health endpoint
     - /search router  (api/routes/search.py)
     - /stores router  (api/routes/stores.py)
@@ -14,10 +16,22 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 
 from api.dependencies import get_settings
 from api.routes import admin, auth as auth_module, chat, search, stores
 from api.routes import users as users_module
+
+# ---------------------------------------------------------------------------
+# Rate limiter (shared instance — imported by route modules)
+# ---------------------------------------------------------------------------
+
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 
 # ---------------------------------------------------------------------------
 # Application
@@ -35,6 +49,28 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# Attach limiter state and exception handler
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
+# ---------------------------------------------------------------------------
+# Security headers middleware
+# ---------------------------------------------------------------------------
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 # ---------------------------------------------------------------------------
 # CORS middleware

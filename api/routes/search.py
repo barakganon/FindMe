@@ -26,6 +26,9 @@ from openai import AsyncOpenAI
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
+
+from api.main import limiter
 
 from pydantic import BaseModel
 
@@ -172,15 +175,17 @@ def _distance_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 
 
 @router.post("/search", response_model=SearchResponse)
+@limiter.limit("30/minute")
 async def search_products(
-    request: ExtendedSearchRequest,
+    request: Request,
+    body: ExtendedSearchRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     ai: Annotated[AsyncOpenAI, Depends(get_ai_client)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> SearchResponse:
     start_time = time.time()
-    query = request.query.strip()
-    filters = request.filters
+    query = body.query.strip()
+    filters = body.filters
 
     # Check cache — skip embedding cost on repeated queries
     filters_dict = filters.model_dump()

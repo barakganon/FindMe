@@ -22,12 +22,14 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -123,10 +125,37 @@ class Store(BaseMixin, Base):
     # The store's own external website
     store_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
 
+    voucher_network: Mapped[str] = mapped_column(
+        String(50), default="buyme", nullable=False, index=True
+    )
+
+    # Multi-category support (list of strings)
+    buyme_categories: Mapped[Optional[list[str]]] = mapped_column(
+        JSONB, nullable=True, server_default=text("'[]'::jsonb")
+    )
+    
+    # Deprecated: use buyme_categories[0] or logic to select primary
     buyme_category: Mapped[str] = mapped_column(
         String(50), default=BuyMeCategory.OTHER, nullable=False, index=True
     )
+
     is_online: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Chain support
+    parent_chain_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("stores.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # LLM-enriched metadata: {slogan, description, target_audience, redemption_rules, ...}
+    metadata_json: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True, server_default=text("'{}'::jsonb")
+    )
+
+    # Specific link for "פרטי מימוש שובר"
+    redemption_details_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
 
     # Physical location — NULL for online-only stores
     address: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
@@ -184,6 +213,15 @@ class Product(BaseMixin, Base):
     # pgvector — stored as TEXT placeholder; migration converts to vector(1536)
     # See db/vector_index.py for index creation
     embedding_vector: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Deduplication support (from migration 0008)
+    is_duplicate: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    canonical_product_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("products.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -352,6 +390,11 @@ class PriceChange(Base):
         "StoreProduct", back_populates="price_changes"
     )
 
+    __table_args__ = (
+        Index("idx_price_changes_store_product", "store_product_id", text("detected_at DESC")),
+        Index("idx_price_changes_detected", text("detected_at DESC")),
+    )
+
     def __repr__(self) -> str:
         return (
             f"<PriceChange store_product={self.store_product_id} "
@@ -446,6 +489,12 @@ class UserLocation(Base):
     # Relationship
     user: Mapped["User"] = relationship("User", back_populates="locations")
 
+    __table_args__ = (
+        Index("idx_user_locations_user", "user_id"),
+        # Partial unique index: only one default location per user
+        Index("idx_user_locations_default", "user_id", unique=True, postgresql_where=text("is_default = true")),
+    )
+
     def __repr__(self) -> str:
         return f"<UserLocation {self.label!r} user={self.user_id}>"
 
@@ -479,6 +528,10 @@ class UserVoucherCard(Base):
 
     # Relationship
     user: Mapped["User"] = relationship("User", back_populates="voucher_cards")
+
+    __table_args__ = (
+        Index("idx_user_vouchers_user", "user_id"),
+    )
 
     def __repr__(self) -> str:
         return f"<UserVoucherCard {self.voucher_network!r} user={self.user_id}>"
@@ -551,6 +604,10 @@ class UserImplicitSignal(Base):
     # Relationship
     user: Mapped["User"] = relationship("User", back_populates="implicit_signals")
 
+    __table_args__ = (
+        Index("idx_implicit_user_type_val", "user_id", "signal_type", "signal_value", unique=True),
+    )
+
     def __repr__(self) -> str:
         return (
             f"<UserImplicitSignal {self.signal_type!r}={self.signal_value!r} "
@@ -597,6 +654,11 @@ class UserInferredAttribute(Base):
     # Relationship
     user: Mapped["User"] = relationship("User", back_populates="inferred_attributes")
 
+    __table_args__ = (
+        Index("idx_inferred_user", "user_id"),
+        Index("idx_inferred_user_attr", "user_id", "attribute", unique=True),
+    )
+
     def __repr__(self) -> str:
         return (
             f"<UserInferredAttribute {self.attribute!r}={self.value!r} "
@@ -642,6 +704,10 @@ class UserSearchHistory(Base):
 
     # Relationship
     user: Mapped["User"] = relationship("User", back_populates="search_history")
+
+    __table_args__ = (
+        Index("idx_search_history_user", "user_id", text("searched_at DESC")),
+    )
 
     def __repr__(self) -> str:
         return f"<UserSearchHistory message={self.message[:40]!r} user={self.user_id}>"

@@ -51,7 +51,8 @@ a helpful structured answer.
 
 **Sprint queue (do in this order):**
 1. **Production Deployment** — AWS S3 + CloudFront frontend, EC2/ECS backend, SSL, monitoring ← NEXT
-2. **Remaining data tasks** — run geocoding (needs `GOOGLE_MAPS_API_KEY`), run deduplication, scrape image URLs
+2. **Store Enrichment & Chain Support** — multi-category support, chain detection, LLM-based metadata, redemption details
+3. **Remaining data tasks** — run geocoding (needs `GOOGLE_MAPS_API_KEY`), complete bulk deduplication, re-run scrapers for image URLs
 
 ---
 
@@ -67,13 +68,24 @@ a helpful structured answer.
 | 2 | Deploy frontend to AWS S3 + CloudFront | `frontend/`, AWS | TODO |
 | 3 | Deploy FastAPI to EC2 or ECS (Docker) | `Dockerfile`, AWS | TODO |
 | 4 | SSL certificate + custom domain | AWS ACM, Route53 | TODO |
-| 5 | Rate limiting on `/search` and `/api/chat` | `api/main.py` | TODO |
+| 5 | Rate limiting on `/search` and `/api/chat` | `api/main.py` | ✅ Done |
 | 6 | Basic uptime monitoring | External (UptimeRobot / AWS CloudWatch) | TODO |
 
 **Also pending (no sprint blocker):**
 - Add `GOOGLE_MAPS_API_KEY` to `.env` → run `python -m db.run_geocoding` (geocodes 500 physical stores)
-- Run `python -m normalization.deduplication` (merges duplicate products across stores)
-- Scrape `image_url` into `store_products` (column exists, scrapers need update to populate it)
+- Run `python -m normalization.deduplication` (merges duplicate products across stores) — **Initial run: 10 merges confirmed.**
+- Scrape `image_url` into `store_products` — **Updated scrapers, 1,743 images populated for Femina.**
+
+## Upcoming Sprint: Store Enrichment & Chain Support
+**Goal:** Improve store-level search and geographic grouping by understanding chains and multi-category contexts.
+
+### Task List
+| # | Task | File | Status |
+|---|------|------|--------|
+| 1 | DB Migration: Add `parent_chain_id`, `buyme_categories` (JSONB), `metadata_json` (JSONB) | `db/models.py` | TODO |
+| 2 | Update `buyme_store_scraper.py` to save full category list and redemption links | `scraper/buyme_store_scraper.py` | TODO |
+| 3 | LLM Enrichment Script: Identify chains and extract "meta" from slogans/terms | `scraper/enrich_stores.py` | TODO |
+| 4 | Geo-search update: Group results by chain for better map/list UX | `api/routes/stores.py` | TODO |
 
 ## Completed Sprint: Data Quality ✅
 
