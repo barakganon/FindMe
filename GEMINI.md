@@ -16,6 +16,6 @@
 - **Deployment**: Standard static SPA (S3/CloudFront) + containerized backend (EC2/ECS).
 
 ## Maintenance Rules
-- **Migrations**: Alembic head must stay synced with `db/models.py`.
-- **Rate Limiting**: Enabled via `SlowAPI` (200/min default).
-- **Git**: Branch protection on `master`. All commits must be verified against current model state.
+- **Migrations:** Keep Alembic head synced with `db/models.py`.
+- **Rate Limiting:** Use SlowAPI (200/min).
+- **Git:** Work on branches. Commits must be verified against model state.

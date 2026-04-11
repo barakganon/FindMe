@@ -1,7 +1,26 @@
 {
-  "project_name": "FindMe",
-  "default_model": "gemini-2.5-flash",
-  "auto_save_memory": true,
-  "git_commit_style": "conventional",
-  "log_level": "info"
+  "model": {
+    "id": "gemini-3.1-flash-lite-preview"
+  },
+  "general": {
+    "autoApprovalMode": "auto_edit",
+    "checkpointing": {
+      "enabled": true
+    }
+  },
+  "context": {
+    "fileName": ["GEMINI.md", "CLAUDE.md", "STATUS.md"],
+    "fileFiltering": {
+      "respectGitIgnore": true
+    }
+  },
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "$GITHUB_PAT"
+      }
+    }
+  }
 }
