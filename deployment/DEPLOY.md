@@ -43,6 +43,38 @@ aws s3 sync dist/ s3://your-bucket/ --delete
 aws cloudfront create-invalidation --distribution-id XXXXX --paths "/*"
 ```
 
+## Frontend Security (S3 & CloudFront)
+
+To secure the frontend, implement the following:
+
+### 1. S3 Bucket Policy
+Restrict S3 access to only allow requests from the CloudFront Origin Access Control (OAC):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": {
+    "Sid": "AllowCloudFrontServicePrincipalReadOnly",
+    "Effect": "Allow",
+    "Principal": {
+      "Service": "cloudfront.amazonaws.com"
+    },
+    "Action": "s3:GetObject",
+    "Resource": "arn:aws:s3:::YOUR_BUCKET_NAME/*",
+    "Condition": {
+      "StringEquals": {
+        "AWS:SourceArn": "arn:aws:cloudfront::YOUR_ACCOUNT_ID:distribution/YOUR_DISTRIBUTION_ID"
+      }
+    }
+  }
+}
+```
+
+### 2. CloudFront Origin Access Control (OAC)
+- Create an OAC in CloudFront.
+- Update your S3 Origin to use this OAC.
+- Ensure the S3 bucket is **not** public.
+
 ## Useful Commands
 
 ```bash

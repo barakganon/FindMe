@@ -20,6 +20,14 @@ jobs:
           npm ci
           VITE_API_URL=${{ secrets.VITE_API_URL }} npm run build
 
+      - name: Smoke test build
+        run: |
+          if [ ! -f frontend/dist/index.html ]; then
+            echo "Smoke test failed: dist/index.html missing"
+            exit 1
+          fi
+          echo "Smoke test passed: dist/index.html exists"
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
