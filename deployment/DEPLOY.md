@@ -64,3 +64,21 @@ For production deployments on AWS, configure the following CloudWatch monitors:
     - Monitor CPU and memory utilization on EC2 instances.
     - Set up CloudWatch Alarms for the `/api/admin/health` endpoint to trigger notifications if `latency_ms` exceeds defined thresholds (e.g., > 200ms).
     - Track 5xx error rates to detect service degradations early.
+
+## Useful Commands
+
+```bash
+# On EC2
+cd /opt/findme
+docker compose logs api -f          # API logs
+docker compose logs celery-worker   # Celery logs
+docker compose exec api pytest tests/ -v  # Run tests
+docker compose exec api python -m alembic upgrade head  # Migrations
+
+# Check Redis
+docker compose exec redis redis-cli ping
+
+# Admin health
+curl https://your-domain.com/api/admin/health
+curl https://your-domain.com/api/admin/health/detailed
+```

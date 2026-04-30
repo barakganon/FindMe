@@ -4,6 +4,9 @@ No authentication required (internal use only).
 """
 from __future__ import annotations
 
+import os
+import platform
+import sys
 from datetime import datetime
 from typing import Any
 
@@ -15,6 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.dependencies import get_db, get_redis
 
 router = APIRouter(tags=["Admin"])
+
+# Keep in sync with _VERSION in api/main.py
+_APP_VERSION = "0.1.0"
 
 
 @router.get("/admin/health")
@@ -83,28 +89,22 @@ async def health_detailed(
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ) -> dict[str, Any]:
-    # Basic components check
     db_ok = False
     try:
         await db.execute(text("SELECT 1"))
         db_ok = True
-    except:
+    except Exception:
         pass
-    
+
     redis_ok = False
     try:
         await redis.ping()
         redis_ok = True
-    except:
+    except Exception:
         pass
 
-    import os
-    import platform
-    import sys
-    
     return {
-        "version": "1.0.0",
-        "uptime": "N/A", # Placeholder for now
+        "version": _APP_VERSION,
         "environment": os.getenv("ENV", "development"),
         "system": {
             "platform": platform.platform(),
