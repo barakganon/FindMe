@@ -1,0 +1,20 @@
+# Local development overrides — applied automatically by Docker Compose.
+# Restores DB/Redis port exposure and code volume mounts that are intentionally
+# absent from docker-compose.yml (production) but required locally.
+version: "3.9"
+services:
+  redis:
+    ports:
+      - "6379:6379"
+
+  postgres:
+    ports:
+      - "5432:5432"
+
+  celery-worker:
+    volumes:
+      - .:/app
+
+  celery-beat:
+    volumes:
+      - .:/app
