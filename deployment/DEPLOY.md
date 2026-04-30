@@ -43,6 +43,40 @@ aws s3 sync dist/ s3://your-bucket/ --delete
 aws cloudfront create-invalidation --distribution-id XXXXX --paths "/*"
 ```
 
+## Frontend Security (S3 & CloudFront)
+
+To secure the frontend, implement the following:
+
+### 1. S3 Bucket Policy
+Restrict S3 access to only allow requests from the CloudFront Origin Access Control (OAC):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowCloudFrontServicePrincipalReadOnly",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "cloudfront.amazonaws.com"
+      },
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::YOUR_BUCKET_NAME/*",
+      "Condition": {
+        "StringEquals": {
+          "AWS:SourceArn": "arn:aws:cloudfront::YOUR_ACCOUNT_ID:distribution/YOUR_DISTRIBUTION_ID"
+        }
+      }
+    }
+  ]
+}
+```
+
+### 2. CloudFront Origin Access Control (OAC)
+- Create an OAC in CloudFront.
+- Update your S3 Origin to use this OAC.
+- Ensure the S3 bucket is **not** public.
+
 ## Monitoring Strategy
 
 To ensure high availability and performance of the FindMe application, we implement multi-layer monitoring:
@@ -60,7 +94,7 @@ Use **UptimeRobot** (or similar tools) to perform external probes every 5 minute
 ### 3. Log Aggregation & Metrics (CloudWatch)
 For production deployments on AWS, configure the following CloudWatch monitors:
 - **CloudWatch Logs**: Centralize logs from Docker containers for troubleshooting application errors.
-- **CloudWatch Metrics**: 
+- **CloudWatch Metrics**:
     - Monitor CPU and memory utilization on EC2 instances.
     - Set up CloudWatch Alarms for the `/api/admin/health` endpoint to trigger notifications if `latency_ms` exceeds defined thresholds (e.g., > 200ms).
     - Track 5xx error rates to detect service degradations early.
