@@ -26,7 +26,11 @@ jobs:
             echo "Smoke test failed: dist/index.html missing"
             exit 1
           fi
-          echo "Smoke test passed: dist/index.html exists"
+          if [ -z "$(ls frontend/dist/assets/*.js 2>/dev/null)" ]; then
+            echo "Smoke test failed: no JS bundles in dist/assets/"
+            exit 1
+          fi
+          echo "Smoke test passed: index.html and JS bundles present"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
