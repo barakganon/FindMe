@@ -4,6 +4,9 @@ No authentication required (internal use only).
 """
 from __future__ import annotations
 
+import os
+import platform
+import sys
 from datetime import datetime
 from typing import Any
 
@@ -16,13 +19,17 @@ from api.dependencies import get_db, get_redis
 
 router = APIRouter(tags=["Admin"])
 
+# Keep in sync with _VERSION in api/main.py
+_APP_VERSION = "0.1.0"
+
 
 @router.get("/admin/health")
 async def health(
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
 ) -> dict[str, Any]:
-    # DB stats
+    # DB stats & latency
+    start = datetime.utcnow()
     result = await db.execute(text("""
         SELECT
             (SELECT COUNT(*) FROM products) AS products_total,
@@ -31,6 +38,16 @@ async def health(
             (SELECT COUNT(*) FROM stores WHERE lat IS NOT NULL) AS stores_geocoded
     """))
     row = result.fetchone()
+    db_latency = (datetime.utcnow() - start).total_seconds() * 1000
+
+    # Redis health & latency
+    start = datetime.utcnow()
+    try:
+        await redis.ping()
+        redis_status = "ok"
+    except Exception:
+        redis_status = "unavailable"
+    redis_latency = (datetime.utcnow() - start).total_seconds() * 1000
 
     # Last 5 scrape runs
     runs_result = await db.execute(text("""
@@ -50,25 +67,52 @@ async def health(
         for r in runs_result.fetchall()
     ]
 
-    # Redis health
-    try:
-        await redis.ping()
-        redis_status = "ok"
-    except Exception:
-        redis_status = "unavailable"
-
     products_total = row[0] or 0
     products_embedded = row[1] or 0
     coverage = round(products_embedded / products_total * 100, 1) if products_total > 0 else 0.0
 
     return {
-        "database": "ok",
-        "redis": redis_status,
+        "database": {"status": "ok", "latency_ms": round(db_latency, 2)},
+        "redis": {"status": redis_status, "latency_ms": round(redis_latency, 2)},
         "products_total": products_total,
         "products_embedded": products_embedded,
         "embedding_coverage_pct": coverage,
         "stores_total": row[2] or 0,
         "stores_geocoded": row[3] or 0,
         "recent_scrape_runs": runs,
+        "checked_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+@router.get("/admin/health/detailed")
+async def health_detailed(
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+) -> dict[str, Any]:
+    db_ok = False
+    try:
+        await db.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:
+        pass
+
+    redis_ok = False
+    try:
+        await redis.ping()
+        redis_ok = True
+    except Exception:
+        pass
+
+    return {
+        "version": _APP_VERSION,
+        "environment": os.getenv("ENV", "development"),
+        "system": {
+            "platform": platform.platform(),
+            "python": sys.version,
+        },
+        "components": {
+            "database": {"ok": db_ok},
+            "redis": {"ok": redis_ok},
+        },
         "checked_at": datetime.utcnow().isoformat() + "Z",
     }
