@@ -17,6 +17,8 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from redis.asyncio import Redis
 from redis.asyncio import from_url as redis_from_url
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 
@@ -61,6 +63,12 @@ def get_settings() -> Settings:
     """Return a cached singleton Settings instance."""
     return Settings()
 
+
+# ---------------------------------------------------------------------------
+# Rate limiter (shared instance — imported by route modules and main.py)
+# ---------------------------------------------------------------------------
+
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 
 # ---------------------------------------------------------------------------
 # Database session factory

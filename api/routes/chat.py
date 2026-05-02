@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from starlette.requests import Request
 
-from api.main import limiter
+from api.dependencies import limiter
 
 from api.auth import get_optional_user
 from api.cache import get_intent_cache, set_intent_cache
@@ -518,10 +518,9 @@ async def _run_store_search(
 
 
 @router.post("/chat", response_model=ChatResponse)
-@limiter.limit("20/minute")
 async def chat(
-    http_request: Request,
-    request: ChatRequest,
+    request: Request,
+    body: ChatRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     ai: Annotated[AsyncOpenAI, Depends(get_ai_client)],
     redis: Annotated[Redis, Depends(get_redis)],
@@ -540,11 +539,11 @@ async def chat(
     """
     start_time = time.time()
 
-    session_context: Optional[SessionContext] = request.session_context
+    session_context: Optional[SessionContext] = body.session_context
     voucher_network = (
         session_context.voucher_network
         if session_context and session_context.voucher_network
-        else request.voucher_network
+        else body.voucher_network
     )
 
     # ------------------------------------------------------------------
@@ -594,8 +593,8 @@ async def chat(
     # Step 1 — Parse intent
     # ------------------------------------------------------------------
     parsed = await _parse_intent(
-        message=request.message,
-        history=request.history,
+        message=body.message,
+        history=body.history,
         session_context=session_context,
         client=ai,
         redis=redis,
@@ -668,7 +667,7 @@ async def chat(
 
     if parsed.intent == "product_search":
         parts = [p for p in [parsed.product_query, parsed.brand] if p]
-        search_text = " ".join(parts) if parts else request.message
+        search_text = " ".join(parts) if parts else body.message
         product_results = await _run_product_search(
             search_text=search_text,
             parsed=parsed,
@@ -718,7 +717,7 @@ async def chat(
                     {
                         "role": "user",
                         "content": (
-                            f"המשתמש אמר: {request.message}\n"
+                            f"המשתמש אמר: {body.message}\n"
                             "אין לי מספיק מידע כדי לחפש. שאל שאלת הבהרה קצרה בעברית."
                         ),
                     },
@@ -747,7 +746,7 @@ async def chat(
 
             history_entry = UserSearchHistory(
                 user_id=current_user.id,
-                message=request.message,
+                message=body.message,
                 intent=parsed.intent,
                 resolved_query=parsed.product_query or parsed.city,
                 city_used=parsed.city,
@@ -777,7 +776,7 @@ async def chat(
 
             # Fire-and-forget inference extraction (never blocks response)
             asyncio.create_task(
-                extract_and_update_attributes(current_user.id, request.message, db, ai)
+                extract_and_update_attributes(current_user.id, body.message, db, ai)
             )
         except Exception:
             pass  # Never block the response

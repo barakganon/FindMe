@@ -28,7 +28,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from api.main import limiter
+from api.dependencies import limiter
 
 from pydantic import BaseModel
 
@@ -175,7 +175,6 @@ def _distance_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 
 
 @router.post("/search", response_model=SearchResponse)
-@limiter.limit("30/minute")
 async def search_products(
     request: Request,
     body: ExtendedSearchRequest,
