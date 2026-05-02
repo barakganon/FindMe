@@ -38,7 +38,9 @@ COPY . .
 
 ENV PATH=/root/.local/bin:$PATH
 
-# Install Playwright browsers
-RUN playwright install chromium --with-deps
+# Install Playwright browsers (browser binaries only — system deps installed manually above
+# because --with-deps fails on Debian Bookworm: ttf-unifont and ttf-ubuntu-font-family
+# were removed/renamed and Playwright's installer hasn't caught up).
+RUN playwright install chromium
 
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
