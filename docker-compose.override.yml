@@ -11,6 +11,12 @@ services:
     ports:
       - "5432:5432"
 
+  api:
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+
   celery-worker:
     volumes:
       - .:/app
