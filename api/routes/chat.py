@@ -518,7 +518,9 @@ async def _run_store_search(
 
 
 @router.post("/chat", response_model=ChatResponse)
+@limiter.limit("20/minute")
 async def chat(
+
     request: Request,
     body: ChatRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
