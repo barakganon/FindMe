@@ -54,7 +54,7 @@ The `fix/chat-route-rate-limiter-regression` branch should already be merged to 
 that was breaking 8 tests). Verify:
 
 ```bash
-cd /Users/barakganon/PycharmProjects/PythonProject/FindMe
+cd /Users/barakganon/personal_projects/FindMe
 git checkout master && git pull origin master
 source .venv/bin/activate && python -m pytest tests/ -q   # must show 29 passed
 git checkout -b infra/render-vercel-deploy

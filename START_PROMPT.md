@@ -85,7 +85,7 @@ asking only when AWS console action is genuinely required.
 ### GIT SETUP (do this once before Phase 1)
 
 ```bash
-cd /Users/barakganon/PycharmProjects/PythonProject/FindMe
+cd /Users/barakganon/personal_projects/FindMe
 git checkout master && git pull origin master
 git checkout -b infra/aws-production-deploy
 ```
@@ -164,7 +164,7 @@ Save the output — you'll inject it into the EC2 `.env` later.
 
 **Task 2.2 — populate production `.env.production` (NOT committed)**
 
-Create `/Users/barakganon/PycharmProjects/PythonProject/FindMe/.env.production` (it's already in `.gitignore` via `.env*`). Use the human's values + the JWT secret you just generated. Use this template — fill in all `<...>` placeholders:
+Create `/Users/barakganon/personal_projects/FindMe/.env.production` (it's already in `.gitignore` via `.env*`). Use the human's values + the JWT secret you just generated. Use this template — fill in all `<...>` placeholders:
 
 ```
 DATABASE_URL=postgresql+asyncpg://findme:<generate-strong-pw>@postgres:5432/buyme_search
@@ -401,7 +401,7 @@ git commit --allow-empty -m "infra(deploy): EC2 setup complete, backend live at 
 **Task 5.1 — set GitHub Actions secrets via gh CLI**
 
 ```bash
-cd /Users/barakganon/PycharmProjects/PythonProject/FindMe
+cd /Users/barakganon/personal_projects/FindMe
 
 # Read these from the human's earlier reply or prompt for missing ones
 gh secret set GEMINI_API_KEY --body "<value>"

@@ -426,7 +426,7 @@ Background embedding script — not touched in this sprint.
 ## Environment
 
 ```bash
-cd /Users/barakganon/PycharmProjects/PythonProject/FindMe
+cd /Users/barakganon/personal_projects/FindMe
 source .venv/bin/activate
 
 # Backend
@@ -1758,7 +1758,7 @@ chore/update-requirements
 
 #### 1. Before starting any work
 ```bash
-cd /Users/barakganon/PycharmProjects/PythonProject/FindMe
+cd /Users/barakganon/personal_projects/FindMe
 git checkout master
 git pull origin master
 git checkout -b <branch-name>
