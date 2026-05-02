@@ -30,8 +30,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from starlette.requests import Request
 
-from api.dependencies import limiter
-
 from api.auth import get_optional_user
 from api.cache import get_intent_cache, set_intent_cache
 from api.chat_utils import apply_inferred_attributes, build_user_context_block, merge_preferences_into_search
@@ -518,9 +516,7 @@ async def _run_store_search(
 
 
 @router.post("/chat", response_model=ChatResponse)
-@limiter.limit("20/minute")
 async def chat(
-
     request: Request,
     body: ChatRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
