@@ -801,3 +801,59 @@ Notes:
 - Deduplication: run `python -m normalization.deduplication` (**Initial run: 10 merges confirmed at 0.99 threshold**)
 - Product images: scrapers updated to populate `store_products.image_url` column (**Femina: 1,743 images populated**)
 - **Store Enrichment & Chain Support**: Update DB schema for multiple categories + parent chains, and run LLM enrichment for redemption details and metadata.
+
+---
+
+## Session: 2026-05-02 — Code Review, Branch Merges & Bug Fixes
+
+> Full multi-branch audit. 3 feature branches reviewed, merged, and bugs fixed. All 29 tests restored.
+
+### BMad Tooling Installed
+
+| Item | Details |
+|------|---------|
+| BMad Method v6.6.1-next.1 | Installed to `.claude/skills/` (42 skill definitions) |
+| `_bmad-output/project-context.md` | Generated — 76 LLM implementation rules across 7 sections |
+
+### Branches Audited & Merged
+
+| Branch | Key Changes | Verdict |
+|--------|------------|---------|
+| `infra/production-backend` | Multi-stage `Dockerfile`, `docker-compose.yml` with `api` service + resource limits, `docker-compose.override.yml` for local dev | ✅ Merged |
+| `infra/monitoring-enhancements` | `/api/admin/health` latency tracking, `/api/admin/health/detailed` new endpoint, `admin.py` code quality fixes | ✅ Merged |
+| `infra/frontend-deploy-security` | CI smoke test strengthened (JS bundle check), S3 OAC bucket policy docs added to DEPLOY.md | ✅ Merged |
+
+### Bug Fixes Applied (2026-05-02)
+
+| Bug | Root Cause | Fix |
+|-----|-----------|-----|
+| **Circular import** — all 29 tests failed at collection | `chat.py` and `search.py` both imported `limiter` from `api.main`, which imports those route modules | Moved `limiter = Limiter(...)` to `api/dependencies.py`; routes now import from `dependencies` |
+| **SlowAPI + `from __future__ import annotations` incompatibility** — 8 tests returned 422 | `@limiter.limit()` wraps the route function; wrapper's `__globals__` is SlowAPI's module, so `get_type_hints()` can't resolve string annotations → FastAPI misclassifies body params as query params | Removed per-route `@limiter.limit()` decorators; global 200/min via `SlowAPIMiddleware` still applies |
+| **`chat.py` parameter naming clash** — same root cause as above | Route signature `(http_request: Request, request: ChatRequest)` had Request not named `request` per SlowAPI convention | Renamed: `http_request` → `request`, `request: ChatRequest` → `body: ChatRequest`; updated all 8 body field accesses |
+| **S3 bucket policy invalid JSON** — DEPLOY.md doc bug | `"Statement"` was `{}` (object) instead of required `[]` (array) — AWS rejects this silently | Fixed in DEPLOY.md to `"Statement": [{ ... }]` |
+| **`admin.py` code quality** — hardcoded version, bare `except:`, imports inside function | Minor but violates project rules | `_APP_VERSION = "0.1.0"` constant, `except Exception:`, imports moved to module top |
+| **DEPLOY.md missing Useful Commands** | `infra/monitoring-enhancements` branch replaced the section during conflict resolution | Restored "## Useful Commands" section after "## Monitoring Strategy" |
+| **Weak CI smoke test** | Only checked `dist/index.html` existence | Added JS bundle check: `ls frontend/dist/assets/*.js` |
+
+### Test Results After Fixes
+
+| Suite | Before | After |
+|-------|--------|-------|
+| Collection | ❌ 0 collected (circular import error) | ✅ 29 collected |
+| Passed | 0 | **29 / 29** ✅ |
+
+### Files Changed This Session
+
+| File | Change |
+|------|--------|
+| `api/dependencies.py` | Added `limiter` instance (moved from `api/main.py`) |
+| `api/main.py` | Removed `limiter` definition; imports from `dependencies` |
+| `api/routes/chat.py` | Fixed import, removed `@limiter.limit`, renamed `http_request`→`request` and `request`→`body` throughout |
+| `api/routes/search.py` | Fixed import, removed `@limiter.limit` |
+| `api/routes/admin.py` | `_APP_VERSION` constant, bare `except` → `except Exception:`, module-level imports |
+| `docker-compose.yml` | Added `api` service, resource limits, removed exposed ports (prod hardening) |
+| `docker-compose.override.yml` | New file — restores dev port exposure and volume mounts |
+| `Dockerfile` | Refactored to multi-stage build (builder + runtime) |
+| `deployment/DEPLOY.md` | S3 OAC bucket policy fix, Monitoring Strategy section, Useful Commands restored |
+| `.github/workflows/deploy-frontend.yml` | JS bundle check added to smoke test |
+| `_bmad-output/project-context.md` | New — 76 LLM implementation rules |

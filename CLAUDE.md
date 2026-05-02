@@ -18,7 +18,7 @@ a helpful structured answer.
 
 ---
 
-## Current State (as of 2026-04-02)
+## Current State (as of 2026-05-02)
 
 - FastAPI backend running at http://localhost:8000
 - React + TypeScript frontend at http://localhost:5173
@@ -26,7 +26,7 @@ a helpful structured answer.
 - **135,865 products, 134,963 embedded (99.3%)** — full vector search coverage ✅
 - **POST /api/chat working** — intent parser + response composer, personalized for logged-in users ✅
 - Hybrid search: pgvector cosine + ILIKE keyword fallback
-- Routes: `POST /search`, `POST /stores/search`, `POST /api/chat`, `POST /api/auth/*`, `GET/PUT /api/users/me/*`, `GET /api/admin/health`
+- Routes: `POST /search`, `POST /stores/search`, `POST /api/chat`, `POST /api/auth/*`, `GET/PUT /api/users/me/*`, `GET /api/admin/health`, `GET /api/admin/health/detailed`
 - Frontend: single chat screen (no tabs), suggestion chips, inline GPS, ProfileDrawer, auth wired, image display, "מחיר לא זמין"
 - Redis cache: search results (5 min) + intent (2 min) — graceful degradation if Redis down
 - JWT auth: register/login/Google OAuth, anonymous users always work
@@ -35,7 +35,9 @@ a helpful structured answer.
 - Deduplication: infrastructure wired (migration 0008, Celery task) — run `python -m normalization.deduplication` to execute
 - Geocoder: Google Maps ready — add `GOOGLE_MAPS_API_KEY` to `.env`, then `python -m db.run_geocoding`
 - **29/29 tests passing** ✅
-- Docker Compose: `docker-compose up` starts full stack
+- Docker Compose: `docker-compose up` starts full stack (api service now included)
+- `docker-compose.override.yml` — dev overrides (ports, volume mounts) auto-applied locally
+- BMad Method v6.6.1 installed — `_bmad-output/project-context.md` generated ✅
 
 **Completed sprints:**
 - ✅ Week 1–4: scraping, DB, normalization, hybrid search, React frontend
@@ -48,9 +50,17 @@ a helpful structured answer.
 - ✅ **Infrastructure Sprint** — Redis cache, Celery scheduler (5 tasks), price_changes table, Docker, admin health endpoint
 - ✅ **User Accounts Sprint** — JWT auth, user tables (migration 0006), preferences, inference engine, ProfileDrawer
 - ✅ **Data Quality Sprint** — image_url column (0007), dedup flag (0008), brand fix (312 products), Google Maps geocoder, min_price filter, availability filter, ResultCard images + "מחיר לא זמין"
+- ✅ **Production Deployment Sprint (infra)** — Docker hardening, health latency monitoring, CI smoke test, S3 OAC security, bug fixes (see below)
+
+**Bug fixes shipped 2026-05-02:**
+- Fixed circular import: `limiter` moved from `api/main.py` → `api/dependencies.py`
+- Fixed SlowAPI + `from __future__ import annotations` incompatibility: removed per-route `@limiter.limit()` decorators (global 200/min via SlowAPIMiddleware applies)
+- Fixed `chat.py` parameter naming (`http_request`/`request` → `request`/`body`) to match SlowAPI convention
+- Fixed S3 bucket policy JSON (`Statement` must be array not object)
+- Fixed `admin.py` hardcoded version, bare `except:`, inline imports, removed `"uptime: N/A"` placeholder
 
 **Sprint queue (do in this order):**
-1. **Production Deployment** — AWS S3 + CloudFront frontend, EC2/ECS backend, SSL, monitoring ← NEXT
+1. **Production Deployment (AWS)** — deploy to S3+CloudFront, EC2, SSL, domain ← NEXT
 2. **Store Enrichment & Chain Support** — multi-category support, chain detection, LLM-based metadata, redemption details
 3. **Remaining data tasks** — run geocoding (needs `GOOGLE_MAPS_API_KEY`), complete bulk deduplication, re-run scrapers for image URLs
 
