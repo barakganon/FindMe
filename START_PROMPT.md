@@ -94,6 +94,44 @@ All file changes in this sprint go on this branch. Commit per phase with convent
 
 ---
 
+### PHASE 0 — merge the test-fix branch first (DO NOT SKIP)
+
+There's a test-failing regression on master that must be merged before deploying.
+A fix branch already exists locally: `fix/chat-route-rate-limiter-regression`.
+
+**The bug:** the `changes` commit (`dd389cc`) re-added `@limiter.limit("20/minute")` to the
+`/api/chat` route. Combined with `from __future__ import annotations`, SlowAPI's wrapper
+breaks FastAPI's body-param resolution → all `POST /api/chat` requests return 422.
+8 tests fail as a result. Without this fix, the deploy ships a broken backend.
+
+**Steps:**
+```bash
+# 1. Push the existing fix branch
+git checkout fix/chat-route-rate-limiter-regression
+git push origin fix/chat-route-rate-limiter-regression
+
+# 2. Verify tests pass
+source .venv/bin/activate
+python -m pytest tests/ -q   # should report: 29 passed
+
+# 3. Merge to master
+git checkout master && git pull origin master
+git merge --no-ff fix/chat-route-rate-limiter-regression \
+  -m "Merge branch 'fix/chat-route-rate-limiter-regression': restore /api/chat tests"
+git push origin master
+
+# 4. Delete local fix branch
+git branch -d fix/chat-route-rate-limiter-regression
+
+# 5. Now create the deploy branch on the FIXED master
+git checkout -b infra/aws-production-deploy
+```
+
+**Checkpoint 0:** `pytest tests/ -q` reports 29 passed on master. CI on master is green.
+Without this, do NOT proceed to Phase 1.
+
+---
+
 ### PHASE 1 — gather deployment values from the human
 
 Ask the human (in chat) for these values, one prompt with all of them at once:
