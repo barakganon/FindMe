@@ -91,8 +91,8 @@ app.add_middleware(
 # Routers
 # ---------------------------------------------------------------------------
 
-app.include_router(search.router, tags=["Search"])
-app.include_router(stores.router, tags=["Stores"])
+app.include_router(search.router, prefix="/api", tags=["Search"])
+app.include_router(stores.router, prefix="/api", tags=["Stores"])
 app.include_router(chat.router, prefix="/api", tags=["Chat"])
 app.include_router(admin.router, prefix="/api", tags=["Admin"])
 app.include_router(auth_module.router, prefix="/api", tags=["Auth"])
