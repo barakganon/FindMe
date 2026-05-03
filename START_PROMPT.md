@@ -1,57 +1,58 @@
-# Production Deploy Sprint — START_PROMPT
+# FindMe — Master Deploy Prompt (Render + Vercel via MCP)
 
-> **Goal:** ship FindMe to a public URL this weekend. Use the existing Docker, nginx, and
-> GitHub Actions infrastructure that's already in the repo. Do NOT rewrite any of it.
+> **Goal:** ship FindMe to a public URL today using the wired-up Render MCP server.
+> **Outcome:** working frontend at `https://findme.vercel.app` (or custom domain), backend at `https://findme-api.onrender.com`, real users can search.
+> **Time:** ~2-3 hours including the pre-deploy cleanup.
 
 ---
 
-## Cost estimate (monthly, v1 traffic)
+## Verified state (snapshot from end of 2026-05-03 session)
+
+| Item | Status |
+|---|---|
+| Master commit | `bc69d50` — STATUS.md updated with all known issues |
+| Tests | ✅ 29 passed |
+| Docker build (linux/arm64 local) | ✅ Clean (Playwright `--with-deps` fix shipped) |
+| API route prefix consistency | ✅ All routes under `/api/*` |
+| Frontend production host config | ✅ Uses `VITE_API_URL` env |
+| Render MCP (Claude Code, user scope) | ✅ Wired up, workspace "My Workspace" auto-selected |
+| Local Postgres | ✅ pgvector 0.8.1, 1.26 GB on disk (~700 MB after restore) |
+| Local data | 135,988 products / 134,963 embedded / 1,236 stores / 426 geocoded |
+| Known **CRITICAL** bug | 🔴 Installment-price extraction at FOX/שילב/etc. (~13K affected products) — see Phase 0 |
+| Known UI bug | 🟡 Out-of-stock visual treatment too subtle — see Phase 0 |
+| Known infra issue | 🟡 venv shebangs point to old PycharmProjects path — see Phase 0 |
+
+---
+
+## Cost summary (recurring)
 
 | Item | Cost |
-|------|------|
-| EC2 `t3.medium` (2 vCPU, 4GB) + 30GB EBS | ~$35 |
-| S3 + CloudFront (low traffic) | ~$2 |
-| Route53 hosted zone | $0.50 |
-| `.co.il` domain (yearly) | ~$15–25 |
-| Gemini paid tier (chat + embedding) | ~$10–30 |
+|---|---|
+| Render Postgres Starter (1 GB, pgvector) | $7 |
+| Render Key Value Starter (25 MB Redis) | $7 |
+| Render Web Service Starter (512 MB / 0.5 CPU) | $7 |
+| Vercel Hobby (frontend) | $0 |
+| Domain (.com, optional v1) | ~$1/mo amortized |
+| Gemini API (paid tier, expected v1 traffic) | ~$5-15 |
 | Google Maps Geocoding (one-time, 500 stores) | ~$2.50 |
-| **Total** | **~$50/mo** |
+| **Recurring monthly** | **~$22-32** |
 
-**Cheaper alternative — if you'd rather spend $10/mo for v1:**
-Skip AWS. Deploy backend to **Render** ($7/mo for Starter), frontend to **Vercel** (free tier),
-DB to **Supabase free tier** or Render postgres ($7/mo). Total ~$10–15/mo. The Dockerfile in
-the repo runs unchanged on Render. Trade-off: you give up the existing GitHub Actions workflows.
-**Recommendation: stick with AWS** for v1 because the tooling is already wired. You can always
-migrate later if costs become a problem.
-</br>
+Skipping Celery worker + beat services for v1 saves $14/mo. Trade-off: scrapers don't auto-run, you trigger weekly via Render Shell. Recommended for v1.
 
 ---
 
-## PRE-FLIGHT — human steps (do these BEFORE pasting the prompt below)
+## Pre-flight (only-you tasks, ~30 min)
 
-These cannot be automated. Allocate ~60–90 minutes.
+These cannot be done by Claude Code. Do them BEFORE pasting the prompt below.
 
-1. **AWS account** — create at https://aws.amazon.com if you don't have one. Add a payment method.
-2. **IAM user for deploy** — create an IAM user with these AWS-managed policies:
-   - `AmazonS3FullAccess`
-   - `CloudFrontFullAccess`
-   - `AmazonEC2FullAccess`
-   - `AmazonRoute53FullAccess`
-   Generate access keys for this user. Save them somewhere safe.
-3. **Domain** — register `findme.co.il` (or alternative) at any .il registrar (e.g., domain.co.il, Domain The Net, Hostinger). About 60–90 ILS/year.
-4. **Install AWS CLI + GitHub CLI locally:**
-   ```bash
-   brew install awscli gh
-   aws configure          # paste IAM access keys
-   gh auth login          # authenticate to GitHub
-   ```
-5. **Verify everything works:**
-   ```bash
-   aws sts get-caller-identity   # should print your IAM user ARN
-   gh repo view barakganon/FindMe   # should show repo info
-   ```
+1. **Vercel account** — sign up at https://vercel.com → connect GitHub. (No MCP exists for Vercel.)
+2. **Google Maps Geocoding API key** — https://console.cloud.google.com → APIs & Services → Library → "Geocoding API" → Enable → Credentials → Create API key → restrict to Geocoding API only.
+3. **Decide: domain or no domain for v1.**
+   - **No domain (recommended for v1)**: ship at `findme.vercel.app` and `findme-api.onrender.com`. Move to a domain in week 2 once you've validated demand.
+   - **With domain**: register at any registrar (~$10-15/year). Cloudflare for DNS is fine and free.
+4. **Confirm Gemini paid tier** — https://aistudio.google.com → your project → billing enabled. Free tier limits get hit fast in production.
 
-When all 5 are done, paste the prompt below into Claude Code in the FindMe directory.
+When all four are done, paste the prompt below into a fresh Claude Code session in `/Users/barakganon/personal_projects/FindMe`.
 
 ---
 
@@ -59,561 +60,597 @@ When all 5 are done, paste the prompt below into Claude Code in the FindMe direc
 ## PASTE EVERYTHING BELOW THIS LINE INTO CLAUDE CODE
 ## ─────────────────────────────────────────────────────────────────
 
-Read these files fully before doing anything:
-- `CLAUDE.md`
-- `STATUS.md`
-- `deployment/DEPLOY.md`
-- `deployment/setup-ec2.sh`
-- `deployment/nginx.conf`
-- `.github/workflows/ci.yml`
-- `.github/workflows/deploy-backend.yml`
-- `.github/workflows/deploy-frontend.yml`
-- `Dockerfile`
-- `docker-compose.yml`
-- `docker-compose.override.yml`
-- `.env.example`
+You are the **Master Deploy Agent**. Read these files fully before doing anything:
 
-You are the **Deploy Agent**. Execute this sprint in 6 sequential phases. Each phase
-has an explicit checkpoint — confirm it passes before proceeding. Never skip a phase.
-If a phase fails, **stop immediately**, report the failure, and ask the human for guidance.
+- `STATUS.md` — full project history; the Session: 2026-05-03 block at the bottom is the most relevant
+- `CLAUDE.md` — project conventions
+- `ANALYTICS.md` — first-week post-launch SQL playbook (referenced in Phase 5)
+- `Dockerfile`, `docker-compose.yml`, `requirements.txt`, `.env.example`
+- `frontend/vite.config.ts`, `frontend/src/api.ts`
 
-The user expects you to be persistent and complete the deploy autonomously where possible,
-asking only when AWS console action is genuinely required.
+**You have the Render MCP available** at user scope. Use its tools (`list_services`, `create_postgres`, `create_keyvalue`, `create_web_service`, `update_environment_variables`, `list_logs`, `query_render_postgres`, etc.) instead of asking the user to click through dashboards. Tool results count as authoritative.
+
+Execute in **6 phases**, sequentially. Each phase has an explicit checkpoint — confirm it passes before proceeding. **If a phase fails, stop and report.** Don't keep going on a broken foundation.
+
+**Git discipline:** every change goes on a feature branch with conventional commit messages. Branch is pushed = task done. Never commit `.env*` or any secrets.
 
 ---
 
-### GIT SETUP (do this once before Phase 1)
+### PHASE 0 — Pre-deploy local cleanup (~45 min)
 
+#### Task 0.1 — Branch off
 ```bash
 cd /Users/barakganon/personal_projects/FindMe
 git checkout master && git pull origin master
-git checkout -b infra/aws-production-deploy
+git checkout -b deploy/pre-launch-cleanup
 ```
 
-All file changes in this sprint go on this branch. Commit per phase with conventional commits.
+#### Task 0.2 — Resolve the installment-price bug
 
----
+The user's Phase 0 decision: ask them to confirm Option 1 (null bad prices). If they confirm:
 
-### PHASE 0 — merge the test-fix branch first (DO NOT SKIP)
-
-There's a test-failing regression on master that must be merged before deploying.
-A fix branch already exists locally: `fix/chat-route-rate-limiter-regression`.
-
-**The bug:** the `changes` commit (`dd389cc`) re-added `@limiter.limit("20/minute")` to the
-`/api/chat` route. Combined with `from __future__ import annotations`, SlowAPI's wrapper
-breaks FastAPI's body-param resolution → all `POST /api/chat` requests return 422.
-8 tests fail as a result. Without this fix, the deploy ships a broken backend.
-
-**Steps:**
 ```bash
-# 1. Push the existing fix branch
-git checkout fix/chat-route-rate-limiter-regression
-git push origin fix/chat-route-rate-limiter-regression
+PGBIN=/Applications/Postgres.app/Contents/Versions/18/bin
 
-# 2. Verify tests pass
-source .venv/bin/activate
-python -m pytest tests/ -q   # should report: 29 passed
+# Show the impact first — DON'T commit this UPDATE blindly
+$PGBIN/psql -d buyme_search -c "
+SELECT s.name_he, count(*) AS will_be_nulled, min(sp.price), max(sp.price)
+FROM store_products sp JOIN stores s ON s.id = sp.store_id
+WHERE s.name_he IN ('FOX','Fox Home','שילב','רשת Bגוד','Babystar','SOHO','אהבה קטנה','SWEETWEET','Femina')
+  AND sp.price IS NOT NULL AND sp.price < 40
+GROUP BY s.name_he ORDER BY will_be_nulled DESC;"
+```
 
-# 3. Merge to master
-git checkout master && git pull origin master
-git merge --no-ff fix/chat-route-rate-limiter-regression \
-  -m "Merge branch 'fix/chat-route-rate-limiter-regression': restore /api/chat tests"
+Show the user the count breakdown. If they approve:
+
+```bash
+$PGBIN/psql -d buyme_search -c "
+UPDATE store_products
+SET price = NULL
+WHERE store_id IN (
+  SELECT id FROM stores
+  WHERE name_he IN ('FOX','Fox Home','שילב','רשת Bגוד','Babystar','SOHO','אהבה קטנה','SWEETWEET','Femina')
+)
+AND price IS NOT NULL AND price < 40;"
+```
+
+Document the fix in STATUS.md as a new entry under Session 2026-05-03, with the count of rows nulled.
+
+```bash
+git add STATUS.md
+git commit -m "fix(data): null installment-extracted prices at fashion/baby stores
+
+Set price=NULL for ~10K products at FOX, שילב, רשת Bגוד, Babystar,
+SOHO, אהבה קטנה, SWEETWEET, Femina, Fox Home where price < ₪40.
+
+These were installment prices captured by scrapers as the lump-sum
+price. Frontend already shows 'מחיר לא זמין' for null prices, so this
+prevents misleading users while we plan a proper scraper fix in week 1
+post-launch."
+```
+
+#### Task 0.3 — Fix out-of-stock visual treatment
+
+Edit `frontend/src/components/ResultCard.tsx`:
+
+- Wrap the entire card in a className that adds `opacity-60 bg-gray-50` when `!result.availability`
+- Replace the tiny `● אזל` line with a prominent badge: `<span className="text-red-600 font-semibold text-xs">אזל המלאי</span>` when sold out
+- Disable the "לרכישה ←" link entirely OR change it to "לפרטים ←" (text gray, lower-emphasis) when sold out — choice is yours
+
+Also update `chat.py` `_run_product_search`: after merging results, sort `availability=true` first, `availability=false` last. This keeps in-stock items at the top of result grids.
+
+```bash
+cd /Users/barakganon/personal_projects/FindMe
+# Verify build still passes
+cd frontend && npm run build && cd ..
+git add frontend/src/components/ResultCard.tsx api/routes/chat.py
+git commit -m "fix(ui): visually demote out-of-stock products in result cards
+
+- Greyed background + reduced opacity for sold-out items
+- Replace tiny gray 'אזל' text with prominent red 'אזל המלאי' badge
+- Sort in-stock products first in chat product_search results
+- Disable purchase link styling on sold-out cards"
+```
+
+#### Task 0.4 — Recreate the venv
+
+The current `.venv/bin/*` script wrappers have shebangs hardcoded to the old PycharmProjects path. Workarounds (`.venv/bin/python -m uvicorn`) work but the wrappers are brittle. Fix it now:
+
+```bash
+cd /Users/barakganon/personal_projects/FindMe
+# Stop any running uvicorn first
+pkill -f "uvicorn api.main" || true
+deactivate 2>/dev/null || true
+rm -rf .venv
+python3 -m venv .venv
+.venv/bin/pip install --upgrade pip
+.venv/bin/pip install -r requirements.txt
+# Verify all binaries now have correct shebangs
+head -1 .venv/bin/uvicorn .venv/bin/alembic .venv/bin/celery .venv/bin/pytest
+# All should show: #!/Users/barakganon/personal_projects/FindMe/.venv/bin/python
+```
+
+If pip install fails on any package (e.g., `playwright`), report to user — `.venv/bin/playwright install chromium` may be needed.
+
+#### Task 0.5 — Run tests on the fresh venv
+```bash
+.venv/bin/pytest tests/ -q
+# Expect: 29 passed
+```
+
+#### Task 0.6 — Optional: Google Maps geocoding
+
+If the user provided `GOOGLE_MAPS_API_KEY`, add to `.env` and run:
+```bash
+echo "GOOGLE_MAPS_API_KEY=<key>" >> .env
+.venv/bin/python -m db.run_geocoding
+# Expect: ~500 additional stores geocoded, $2.50 cost on Google Maps
+```
+
+If they didn't provide one, skip — tell them they can run this from Render Shell post-deploy.
+
+#### Task 0.7 — Optional: bulk deduplication
+
+```bash
+# Dry-run first to see the count
+.venv/bin/python -m normalization.deduplication --threshold 0.95
+# If the count looks reasonable (<2K merges), apply:
+.venv/bin/python -m normalization.deduplication --threshold 0.95 --apply
+```
+
+#### Task 0.8 — Push the cleanup branch and merge
+
+```bash
+git push origin deploy/pre-launch-cleanup
+git checkout master
+git merge --no-ff deploy/pre-launch-cleanup -m "Merge: pre-deploy cleanup (price fix, UI, venv, geocoding, dedup)"
 git push origin master
-
-# 4. Delete local fix branch
-git branch -d fix/chat-route-rate-limiter-regression
-
-# 5. Now create the deploy branch on the FIXED master
-git checkout -b infra/aws-production-deploy
+git branch -d deploy/pre-launch-cleanup
 ```
 
-**Checkpoint 0:** `pytest tests/ -q` reports 29 passed on master. CI on master is green.
-Without this, do NOT proceed to Phase 1.
+#### Checkpoint 0
+- [ ] Tests pass (29/29)
+- [ ] Backend chat returns sensible results for the 5 canonical queries
+- [ ] Frontend `npm run build` succeeds
+- [ ] Branch merged to master, pushed to origin
+
+If anything fails, **stop and report**.
 
 ---
 
-### PHASE 1 — gather deployment values from the human
+### PHASE 1 — Provision Render infrastructure via MCP (~15 min)
 
-Ask the human (in chat) for these values, one prompt with all of them at once:
+This phase uses the Render MCP. **Do not tell the user to click through dashboards.** Use the MCP tools.
 
-```
-Before I can configure anything, I need these values from you:
-
-  1. AWS account ID (12-digit number) — find at https://console.aws.amazon.com → top-right
-  2. AWS region (suggest "eu-west-1" — Ireland, closest fast AWS region to Israel)
-  3. Domain you registered (e.g., "findme.co.il")
-  4. The IAM access key ID and secret you created (paste here only — I'll write to .env locally, never commit)
-  5. Whether you want to use RDS for postgres ($15/mo extra, more reliable) OR docker postgres on EC2 (free, fine for v1)
-
-Reply with all 5 values in one message and I'll proceed.
-```
-
-WAIT for the human's reply. Do not proceed without all 5 values.
-
----
-
-### PHASE 2 — generate production secrets and prepare files
-
-Now you have the values. Do these tasks:
-
-**Task 2.1 — generate strong JWT secret**
+#### Task 1.1 — Generate the production JWT secret
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(64))"
+.venv/bin/python -c "import secrets; print(secrets.token_urlsafe(64))"
 ```
-Save the output — you'll inject it into the EC2 `.env` later.
+Save this value as `JWT_SECRET_PROD`. You'll inject it into the Render Web Service env vars in Task 1.4.
 
-**Task 2.2 — populate production `.env.production` (NOT committed)**
+#### Task 1.2 — Create Postgres via MCP
 
-Create `/Users/barakganon/personal_projects/FindMe/.env.production` (it's already in `.gitignore` via `.env*`). Use the human's values + the JWT secret you just generated. Use this template — fill in all `<...>` placeholders:
+Ask the MCP to create a Postgres database. Use these parameters exactly:
+
+- name: `findme-db`
+- plan: `starter` ($7/mo, 1 GB — fits the catalog)
+- region: `frankfurt` (closest to Israel; Render has no Middle East region)
+- postgres version: `16`
+- extensions: `vector` (pgvector — required for embedding search)
+
+The MCP tool returns the database ID. **Save the internal DATABASE_URL and external DATABASE_URL** from the response — you'll need both.
+
+#### Task 1.3 — Create Key Value via MCP
+
+- name: `findme-cache`
+- plan: `starter` ($7/mo, 25 MB)
+- region: `frankfurt`
+- maxmemory policy: `allkeys-lru`
+
+Save the internal Redis URL.
+
+#### Task 1.4 — Create the Web Service via MCP
+
+- name: `findme-api`
+- runtime: `docker`
+- repo: `https://github.com/barakganon/FindMe`
+- branch: `master`
+- region: `frankfurt`
+- plan: `starter`
+- auto-deploy: yes
+
+Set environment variables on the service via the MCP. You need the Postgres URL from Task 1.2 (use the **internal** URL since the service and DB are in the same region):
 
 ```
-DATABASE_URL=postgresql+asyncpg://findme:<generate-strong-pw>@postgres:5432/buyme_search
-DATABASE_URL_SYNC=postgresql+psycopg2://findme:<same-pw>@postgres:5432/buyme_search
-REDIS_URL=redis://redis:6379/0
-CELERY_BROKER_URL=redis://redis:6379/0
-CELERY_RESULT_BACKEND=redis://redis:6379/1
-GEMINI_API_KEY=<copy from current .env>
-GOOGLE_MAPS_API_KEY=<leave blank — Phase 5 task>
-JWT_SECRET=<paste from Task 2.1>
 APP_ENV=production
 APP_HOST=0.0.0.0
 APP_PORT=8000
 LOG_LEVEL=INFO
-CORS_ORIGINS=https://<domain>,https://www.<domain>
+DATABASE_URL=<internal postgres URL with prefix postgresql+asyncpg://>
+DATABASE_URL_SYNC=<same URL but with prefix postgresql+psycopg2://>
+REDIS_URL=<internal redis URL>
+CELERY_BROKER_URL=<same redis URL>/0
+CELERY_RESULT_BACKEND=<same redis URL>/1
+GEMINI_API_KEY=<copy from local .env>
+JWT_SECRET=<value from Task 1.1>
 SEARCH_CACHE_TTL=300
 INTENT_CACHE_TTL=120
 EMBED_BATCH_SIZE=100
-SHOPIFY_SCRAPE_CONCURRENCY=5
+CORS_ORIGINS=https://findme.vercel.app
+   # placeholder — we'll update with the real Vercel URL in Phase 3
 ```
 
-Confirm `.env.production` is gitignored: `git status` must show it as untracked-but-ignored. If it shows as a new file to commit, **STOP** and check `.gitignore`.
+If the user provided `GOOGLE_MAPS_API_KEY`, also set it.
 
-**Task 2.3 — verify the existing infrastructure is sound (read-only)**
-```bash
-# These should all exist already. If any is missing, STOP and report.
-ls -la Dockerfile docker-compose.yml docker-compose.override.yml deployment/setup-ec2.sh deployment/nginx.conf
-ls -la .github/workflows/ci.yml .github/workflows/deploy-backend.yml .github/workflows/deploy-frontend.yml
-```
+#### Task 1.5 — Wait for the Web Service to deploy
 
-**Task 2.4 — update nginx.conf with the actual domain if it's not findme.co.il**
+The first deploy will fail because the database is empty (Alembic migrations haven't run yet, no data). That's expected. Use the MCP to stream the logs and confirm:
+- Build succeeded (Docker image built clean)
+- App startup probably fails on `alembic upgrade head` because it can't find tables — that's fine
 
-If the human's domain is different from `findme.co.il`, edit `deployment/nginx.conf` and replace all 4 occurrences of `findme.co.il` (and `www.findme.co.il`) with the actual domain.
-
-```bash
-git add deployment/nginx.conf
-git commit -m "chore(deploy): update nginx.conf with production domain"
-```
-
-If the domain IS `findme.co.il`, skip this commit.
-
-**Checkpoint 2:** `.env.production` exists locally and is gitignored. nginx.conf has the right domain.
+#### Checkpoint 1
+- [ ] Postgres `findme-db` exists, pgvector enabled
+- [ ] Key Value `findme-cache` exists
+- [ ] Web Service `findme-api` exists with correct env vars
+- [ ] First deploy went through Build phase OK (Runtime errors expected, that's the next phase)
 
 ---
 
-### PHASE 3 — provision AWS infrastructure
+### PHASE 2 — Migrate data from local to Render (~30 min)
 
-**Task 3.1 — create S3 bucket for frontend**
-
-```bash
-DOMAIN="<the domain from Phase 1>"
-REGION="<the region from Phase 1>"
-BUCKET_NAME="$DOMAIN-frontend"   # e.g. findme.co.il-frontend
-
-aws s3 mb s3://$BUCKET_NAME --region $REGION
-aws s3api put-bucket-versioning --bucket $BUCKET_NAME --versioning-configuration Status=Enabled
-```
-
-Save the bucket name — you'll need it for GitHub secrets.
-
-**Task 3.2 — launch EC2 instance**
-
-This step is best done in the AWS console because the IAM user needs to attach a key pair, and key creation in CLI is awkward.
-
-Tell the human:
-```
-Open AWS Console → EC2 → Launch Instance:
-  - Name: findme-prod
-  - AMI: Ubuntu Server 22.04 LTS (free tier eligible)
-  - Instance type: t3.medium
-  - Key pair: create a new one named "findme-deploy-key", DOWNLOAD THE .pem FILE — save it to ~/.ssh/findme-deploy-key.pem
-  - Security group: create new, allow:
-      • SSH (22) from your IP only
-      • HTTP (80) from anywhere
-      • HTTPS (443) from anywhere
-  - Storage: 30 GB gp3
-  - Launch.
-
-Once launched, give me the public IPv4 address.
-```
-
-WAIT for the human's reply with the EC2 public IP. Save it as `EC2_HOST`.
-
-Set permissions on the key:
-```bash
-chmod 600 ~/.ssh/findme-deploy-key.pem
-```
-
-**Task 3.3 — create CloudFront distribution**
-
-Tell the human:
-```
-Open AWS Console → CloudFront → Create distribution:
-  - Origin domain: select <BUCKET_NAME>.s3.<region>.amazonaws.com from dropdown
-  - Origin access: "Origin access control" → Create new OAC for this origin
-  - Viewer protocol policy: Redirect HTTP to HTTPS
-  - Allowed HTTP methods: GET, HEAD, OPTIONS
-  - Cache policy: CachingOptimized
-  - Default root object: index.html
-  - Custom error responses → Create:
-      • 403 → /index.html, response code 200, TTL 0  (SPA routing)
-      • 404 → /index.html, response code 200, TTL 0
-  - Alternate domain (CNAME): your domain (e.g. findme.co.il, www.findme.co.il)
-  - SSL certificate: "Request certificate in ACM" — request one in us-east-1 for the domain
-       (CloudFront ONLY accepts certs from us-east-1, regardless of your main region)
-  - Create distribution.
-
-Once it's deployed (~5 min), give me the Distribution ID and the *.cloudfront.net domain it assigned.
-
-After creation, click the distribution → Origins tab → Copy the bucket policy CloudFront generated and paste it on the S3 bucket (Permissions → Bucket policy).
-```
-
-WAIT for: distribution ID + .cloudfront.net domain.
-
-**Task 3.4 — create Route53 hosted zone + DNS records**
+#### Task 2.1 — Dump local DB
 
 ```bash
-DOMAIN="<the domain>"
-aws route53 create-hosted-zone --name $DOMAIN --caller-reference "findme-deploy-$(date +%s)"
+PGBIN=/Applications/Postgres.app/Contents/Versions/18/bin
+$PGBIN/pg_dump -d buyme_search \
+  --format=custom \
+  --no-owner \
+  --no-acl \
+  --compress=9 \
+  --exclude-extension=plpgsql \
+  -f /tmp/findme-local.dump
+ls -lh /tmp/findme-local.dump
+# Expect ~120 MB
 ```
 
-Note the 4 NS records returned. Tell the human:
+`--exclude-extension=plpgsql` skips the default Postgres extension (Render has it built-in). We're letting pgvector come through naturally because we explicitly enabled it on Render in Task 1.2.
+
+#### Task 2.2 — Apply Alembic migrations on Render Postgres FIRST
+
+Do NOT pg_restore directly into an empty DB. The alembic migration system needs to run first to create the schema with the right migration version tracking. Run migrations via the MCP:
+
+Use the MCP tool to invoke a Render Web Service shell and run:
 ```
-Go to your domain registrar's control panel and update the nameservers to these 4 AWS nameservers:
-[paste the NS records from above]
-
-This propagates in 5min–48hr. Tell me when you've updated them.
-```
-
-WAIT for confirmation.
-
-Once the human confirms, create DNS records:
-```bash
-ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name $DOMAIN --query 'HostedZones[0].Id' --output text | sed 's|/hostedzone/||')
-
-# A record for api.<domain> → EC2 (use Route53 Alias would be nicer but A is fine for now)
-aws route53 change-resource-record-sets --hosted-zone-id $ZONE_ID --change-batch '{
-  "Changes":[{"Action":"UPSERT","ResourceRecordSet":{
-    "Name":"api.'$DOMAIN'","Type":"A","TTL":300,
-    "ResourceRecords":[{"Value":"<EC2_HOST>"}]
-  }}]
-}'
-
-# CNAME for www → root
-aws route53 change-resource-record-sets --hosted-zone-id $ZONE_ID --change-batch '{
-  "Changes":[{"Action":"UPSERT","ResourceRecordSet":{
-    "Name":"www.'$DOMAIN'","Type":"CNAME","TTL":300,
-    "ResourceRecords":[{"Value":"'$DOMAIN'"}]
-  }}]
-}'
-
-# Root → CloudFront alias (only via Route53 Alias, not CNAME)
-aws route53 change-resource-record-sets --hosted-zone-id $ZONE_ID --change-batch '{
-  "Changes":[{"Action":"UPSERT","ResourceRecordSet":{
-    "Name":"'$DOMAIN'","Type":"A","AliasTarget":{
-      "HostedZoneId":"Z2FDTNDATAQYW2",
-      "DNSName":"<the cloudfront domain>",
-      "EvaluateTargetHealth":false
-    }
-  }}]
-}'
+cd /app
+python -m alembic upgrade head
 ```
 
-**Checkpoint 3:** S3 bucket exists, EC2 running, CloudFront deployed, Route53 zone with 3 records. `dig $DOMAIN` should resolve to CloudFront within 5–60 minutes (DNS propagation).
+Expect output: 8 migrations applied (0001 through 0008).
+
+If the MCP can't shell into the service, fall back to: SSH-style approach via Render Dashboard (the user opens a Shell tab on the service) and run the alembic command there.
+
+#### Task 2.3 — Restore data only (not schema)
 
 ```bash
-git commit --allow-empty -m "infra(aws): provision S3, EC2, CloudFront, Route53 (manual via console + CLI)"
+RENDER_DB_URL="<external postgres URL from Task 1.2 — uses postgresql:// prefix>"
+
+PGBIN=/Applications/Postgres.app/Contents/Versions/18/bin
+$PGBIN/pg_restore \
+  --dbname="$RENDER_DB_URL" \
+  --data-only \
+  --disable-triggers \
+  --no-owner \
+  --no-acl \
+  --jobs=4 \
+  --verbose \
+  /tmp/findme-local.dump 2>&1 | tee /tmp/restore.log
 ```
 
----
+`--data-only` because the schema already exists (created by alembic in Task 2.2). `--disable-triggers` to avoid foreign-key issues during restore. `--jobs=4` parallelizes the load (~3-5 min for ~120 MB).
 
-### PHASE 4 — set up EC2 + first backend deploy
+You may see warnings about `alembic_version` already populated — those are expected and harmless.
 
-**Task 4.1 — SSH in and run setup script**
+#### Task 2.4 — Verify counts via MCP
 
+Use `query_render_postgres` MCP tool to run:
+```sql
+SELECT
+  (SELECT count(*) FROM stores) AS stores,
+  (SELECT count(*) FROM products) AS products,
+  (SELECT count(*) FROM products WHERE embedding_vector IS NOT NULL) AS embedded,
+  (SELECT count(*) FROM store_products) AS store_products;
+```
+
+Expected (give or take a few from any local edits):
+- stores ≈ 1,236
+- products ≈ 135,988
+- embedded ≈ 134,963
+- store_products ≈ 181,517
+
+If counts are way off, **stop and investigate** — restore probably partial.
+
+#### Task 2.5 — Rebuild the HNSW index (if needed)
+
+Vector indexes don't always restore cleanly via `pg_restore --data-only`. Verify:
+```sql
+SELECT indexname FROM pg_indexes WHERE tablename='products' AND indexname LIKE '%embedding%';
+```
+
+If the embedding index is missing, recreate it (this takes ~5-10 min for 134K vectors):
+```sql
+CREATE INDEX ix_products_embedding
+  ON products USING hnsw (embedding_vector vector_cosine_ops);
+```
+
+#### Task 2.6 — Trigger a fresh deploy of `findme-api`
+
+Now that the DB has data, the service should start cleanly. Use the MCP `update_environment_variables` (touching any env var triggers a redeploy) or have the user push an empty commit to master:
 ```bash
-ssh -i ~/.ssh/findme-deploy-key.pem ubuntu@<EC2_HOST>
-# Once in:
-git clone https://github.com/barakganon/FindMe.git /tmp/findme-clone
-sudo bash /tmp/findme-clone/deployment/setup-ec2.sh
-```
-
-The script clones to `/opt/findme`, installs Docker, brings up redis+postgres, runs migrations, and starts the stack. **It will pause** if there are missing env vars.
-
-**Task 4.2 — copy production .env to EC2**
-
-In a separate terminal on your local machine:
-```bash
-scp -i ~/.ssh/findme-deploy-key.pem .env.production ubuntu@<EC2_HOST>:/tmp/.env
-ssh -i ~/.ssh/findme-deploy-key.pem ubuntu@<EC2_HOST> "sudo mv /tmp/.env /opt/findme/.env && sudo chown ubuntu:ubuntu /opt/findme/.env && sudo chmod 600 /opt/findme/.env"
-```
-
-Then re-run the setup script's docker stage:
-```bash
-ssh -i ~/.ssh/findme-deploy-key.pem ubuntu@<EC2_HOST>
-cd /opt/findme
-docker compose up -d redis postgres
-docker compose run --rm api python -m alembic upgrade head
-docker compose up -d api celery-worker celery-beat
-docker compose ps   # all should show "running" or "healthy"
-curl http://localhost:8000/health   # should return {"status":"ok"}
-```
-
-**Task 4.3 — request SSL cert via certbot**
-
-Still on EC2:
-```bash
-sudo certbot --nginx -d api.<domain>   # backend
-# Choose: redirect HTTP → HTTPS when prompted
-```
-
-For the root + www domain (frontend), SSL is handled by CloudFront's ACM cert from Phase 3.
-
-**Task 4.4 — test backend from outside**
-
-From your local machine:
-```bash
-curl https://api.<domain>/health   # {"status":"ok"}
-curl https://api.<domain>/api/admin/health   # JSON with DB + Redis status
-```
-
-If both work, the backend is live.
-
-**Checkpoint 4:** `https://api.<domain>/health` returns 200 OK over HTTPS.
-
-```bash
-git commit --allow-empty -m "infra(deploy): EC2 setup complete, backend live at api.<domain>"
-```
-
----
-
-### PHASE 5 — wire GitHub Actions for continuous deploy
-
-**Task 5.1 — set GitHub Actions secrets via gh CLI**
-
-```bash
-cd /Users/barakganon/personal_projects/FindMe
-
-# Read these from the human's earlier reply or prompt for missing ones
-gh secret set GEMINI_API_KEY --body "<value>"
-gh secret set JWT_SECRET --body "<value from Task 2.1>"
-gh secret set DOCKERHUB_USERNAME --body "<ask human>"
-gh secret set DOCKERHUB_TOKEN --body "<ask human, generate at hub.docker.com/settings/security>"
-gh secret set AWS_ACCESS_KEY_ID --body "<value>"
-gh secret set AWS_SECRET_ACCESS_KEY --body "<value>"
-gh secret set AWS_REGION --body "<region>"
-gh secret set S3_BUCKET_NAME --body "<bucket name from Phase 3.1>"
-gh secret set CLOUDFRONT_DISTRIBUTION_ID --body "<from Phase 3.3>"
-gh secret set EC2_HOST --body "<EC2 public IP>"
-gh secret set EC2_USER --body "ubuntu"
-gh secret set EC2_SSH_KEY < ~/.ssh/findme-deploy-key.pem
-gh secret set VITE_API_URL --body "https://api.<domain>"
-```
-
-If the human doesn't have a Docker Hub account, prompt them:
-```
-Need a Docker Hub account for the deploy-backend workflow. Create one free at hub.docker.com,
-then go to Account Settings → Security → New Access Token, name it "findme-ci", read+write+delete scope.
-Give me the username and token.
-```
-
-**Task 5.2 — verify all secrets set**
-```bash
-gh secret list
-```
-Should show 13 secrets. If any missing, set them.
-
-**Task 5.3 — push the branch and trigger CI**
-
-```bash
-git push origin infra/aws-production-deploy
-gh pr create --title "Production deploy: AWS infra + GitHub Actions secrets" --body "First production deployment. EC2 backend at api.<domain>, frontend at S3+CloudFront at <domain>."
-```
-
-Watch CI:
-```bash
-gh run watch
-```
-
-When CI passes, the deploy-backend and deploy-frontend workflows trigger automatically (they run on `workflow_run` of CI).
-
-**Task 5.4 — merge to master**
-After CI passes:
-```bash
-gh pr merge --merge   # use --merge (no-ff equivalent for GH PRs)
-```
-
-This triggers another CI run on master, which kicks off the actual prod deploy.
-
-**Task 5.5 — verify deploy completed**
-
-Watch the deploy workflows:
-```bash
-gh run watch                           # latest run
-# Once finished, verify:
-curl https://api.<domain>/api/admin/health
-# Visit https://<domain> in a browser — should show the chat UI
-```
-
-**Checkpoint 5:** browser at `https://<domain>` shows the FindMe chat. Sending "אוזניות סוני" returns Hebrew results. `https://api.<domain>/api/admin/health` returns 99.3% embedding coverage.
-
----
-
-### PHASE 6 — verification + parallel productivity
-
-While Phase 4 and 5 wait on AWS provisioning, DNS propagation, etc., do these in parallel.
-They don't block the deploy — they make the deployed product better.
-
-**Task 6.1 — Google Maps geocoding for 500 stores**
-
-Tell the human:
-```
-While we wait for DNS, let's geocode the 500 ungeocoded physical stores.
-1. Go to https://console.cloud.google.com → APIs & Services → Library
-2. Enable: "Geocoding API"
-3. Credentials → Create credentials → API key
-4. Restrict it to "Geocoding API" only (security)
-5. Give me the key.
-```
-
-When you have the key:
-```bash
-# Add to LOCAL .env (for running the script locally)
-echo "GOOGLE_MAPS_API_KEY=<key>" >> .env
-
-# Also add to EC2 .env via ssh
-ssh -i ~/.ssh/findme-deploy-key.pem ubuntu@<EC2_HOST> "echo 'GOOGLE_MAPS_API_KEY=<key>' | sudo tee -a /opt/findme/.env"
-
-# Run geocoding locally (faster — DB is local)
-source .venv/bin/activate
-python -m db.run_geocoding
-```
-
-Cost: ~$2.50 for 500 stores at $0.005/request. Done in <10 minutes.
-
-After it finishes, sync the geocoded data to EC2 OR re-run on EC2 — whichever is simpler. Easiest: dump and restore postgres.
-
-Commit (the script wasn't changed but data was, so no commit needed unless config changed).
-
-**Task 6.2 — run bulk deduplication**
-
-```bash
-source .venv/bin/activate
-python -m normalization.deduplication --threshold 0.95 --apply
-```
-
-This will merge near-duplicate products across stores. The initial run found 10 merges at 0.99 threshold; lowering to 0.95 will catch more. Review the count before applying — if it's wildly higher than expected, raise the threshold.
-
-**Task 6.3 — set up free uptime monitoring**
-
-Tell the human:
-```
-Sign up free at https://uptimerobot.com (50 monitors free).
-Add 2 HTTP monitors:
-  1. https://api.<domain>/health — every 5 min
-  2. https://<domain> — every 5 min
-Both should email/SMS you on failure.
-```
-
-**Task 6.4 — final smoke test**
-
-From your local machine:
-```bash
-# Backend health
-curl -s https://api.<domain>/api/admin/health | jq
-
-# Anonymous chat
-curl -s -X POST https://api.<domain>/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message":"אוזניות סוני","history":[],"session_context":null}' | jq .message
-
-# Register a real test user
-curl -s -X POST https://api.<domain>/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"barakganon+test@gmail.com","password":"<strong-pw>","display_name":"Barak"}' | jq
-
-# Frontend
-open https://<domain>     # macOS opens in browser
-```
-
-**Checkpoint 6:** all 4 smoke tests pass. The deploy is done.
-
----
-
-### PHASE 7 — ship the announcement
-
-You don't need Claude Code for this part. Tell some real humans the URL. Suggested first audiences:
-
-1. Your wife (test from her phone)
-2. WhatsApp groups for your kids' school parents (Israeli, Hebrew users, gift-card-owners)
-3. Israeli developer subreddits or Facebook groups (r/Israel, "ישראלים בהייטק")
-4. Friends who hold BuyMe cards
-
-Track what people search for via the `user_search_history` table:
-```bash
-ssh -i ~/.ssh/findme-deploy-key.pem ubuntu@<EC2_HOST> \
-  "docker compose exec postgres psql -U findme -d buyme_search -c 'SELECT message, intent, result_count FROM user_search_history ORDER BY searched_at DESC LIMIT 50;'"
-```
-
-This is the data that tells you whether to add Tav HaZahav next, fix specific search bugs, or pivot.
-
----
-
-### Final orchestrator step — merge + update docs
-
-Once Checkpoint 6 passes:
-
-```bash
-git checkout master
-git pull origin master
-# (PR was already merged in Phase 5.4 — this just syncs)
-
-# Update CLAUDE.md current state section: add "✅ Production Deployment — live at https://<domain>"
-# Update STATUS.md with a "## Production Deployed" section listing the URLs and the date
-
-git add CLAUDE.md STATUS.md
-git commit -m "docs: production deploy complete, live at https://<domain>"
+git commit --allow-empty -m "chore: trigger deploy after DB migration"
 git push origin master
 ```
 
----
+Stream logs via MCP `list_logs`. Expect:
+- Migrations: "alembic_version is at 0008"
+- Uvicorn started on 0.0.0.0:8000
+- Health probe passes
 
-### ROLLBACK (if anything breaks badly)
-
-If the production site is broken and you need to revert immediately:
+#### Task 2.7 — Test backend endpoints
 
 ```bash
-# SSH to EC2
-ssh -i ~/.ssh/findme-deploy-key.pem ubuntu@<EC2_HOST>
-cd /opt/findme
-git log --oneline -5            # find the previous good commit
-git checkout <previous-good-sha>
-docker compose pull
-docker compose up -d --no-deps api
+# Get the live URL via MCP `get_service` for findme-api → it returns serviceDetails.url
+RENDER_API_URL="https://findme-api.onrender.com"
+
+curl -s "$RENDER_API_URL/health"
+# {"status":"ok","version":"0.1.0"}
+
+curl -s "$RENDER_API_URL/api/admin/health" | head -c 400
+# Should report ~135K products embedded, DB+Redis up
 ```
 
-For the frontend, use the S3 versioning enabled in Phase 3.1 to restore a prior `index.html` version.
+#### Checkpoint 2
+- [ ] DB counts match local (within rounding)
+- [ ] HNSW index exists
+- [ ] `findme-api` deploys cleanly
+- [ ] `/health` and `/api/admin/health` return 200
 
 ---
 
-## HARD RULES FOR THIS SPRINT
+### PHASE 3 — Frontend on Vercel (~20 min)
 
-- Never commit `.env.production`, `.env`, or any AWS keys to git
-- Never paste IAM credentials into a shell history that's saved — use `aws configure` once and never again
-- Never SSH into EC2 with a wide-open security group (22 from anywhere) — restrict to your IP
-- If a phase checkpoint fails, **STOP and report** — do not "try the next thing"
+Vercel doesn't have an MCP (yet). User needs to do dashboard interaction here. Instruct them clearly.
+
+#### Task 3.1 — User connects the repo to Vercel
+
+Tell the user (in chat):
+
+```
+Open https://vercel.com → Add New → Project → Import barakganon/FindMe.
+
+Configure:
+- Framework Preset: Vite
+- Root Directory: frontend
+- Build Command: npm run build (default)
+- Output Directory: dist (default)
+- Environment Variables:
+    VITE_API_URL = https://findme-api.onrender.com
+    (or the actual Render URL from Phase 2)
+
+Click Deploy. It takes ~90 sec.
+
+When done, give me the Vercel URL (something like findme-xyz.vercel.app).
+```
+
+WAIT for the URL.
+
+#### Task 3.2 — Update CORS_ORIGINS on Render via MCP
+
+Once you have the Vercel URL, use the MCP `update_environment_variables` to set:
+```
+CORS_ORIGINS=https://<vercel-url>,https://www.<vercel-url>
+```
+
+This triggers a redeploy of the API service. Wait for it (~60 sec via `list_logs`).
+
+#### Task 3.3 — Smoke-test the live frontend
+
+Tell the user to open the Vercel URL in a browser and:
+1. Send "אוזניות סוני" — confirm 10 products render with proper RTL
+2. Click "הירשם" → register a test account → confirm logged in
+3. Send a few more queries → open profile drawer → see if anything's there
+4. Try "מסעדות לידי" — confirm GPS prompt appears
+
+If anything is broken, debug:
+- Check browser console for CORS errors → CORS_ORIGINS still wrong
+- Check Network tab for 404s → VITE_API_URL wrong or routes path issue
+- Check Render logs via MCP for 500s → backend bug
+
+#### Checkpoint 3
+- [ ] Vercel URL serves the chat
+- [ ] At least one query returns real Hebrew results
+- [ ] Registration works
+- [ ] No CORS errors in browser console
+
+---
+
+### PHASE 4 — Final smoke test + production verification (~15 min)
+
+#### Task 4.1 — Run all 5 canonical queries against production
+
+```bash
+RENDER_API_URL="https://findme-api.onrender.com"  # or actual
+
+for q in \
+  "אוזניות סוני בבת ים" \
+  "תמצא מסעדות באילת" \
+  "חנויות בגדים באזור שלי, מכנסיים לחתונה, תקציב 200 ש״ח" \
+  "מה אפשר לקנות ב-BuyMe?" \
+  "אני רוצה ל"
+do
+  echo "=== $q ==="
+  curl -s -X POST "$RENDER_API_URL/api/chat" \
+    -H "Content-Type: application/json" \
+    -d "{\"message\":\"$q\",\"history\":[],\"session_context\":null}" \
+    | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(f'  intent: {d[\"intent\"]}')
+print(f'  msg:    {(d[\"message\"] or \"\")[:80]}')
+print(f'  prods:  {len(d.get(\"product_results\") or [])}')
+print(f'  stores: {len(d.get(\"store_results\") or [])}')
+print(f'  ms:     {d.get(\"search_time_ms\")}')
+"
+  echo ""
+done
+```
+
+Expected:
+- 1: product_search, 10 products
+- 2: store_search, 0 stores (data gap, not a bug)
+- 3: clarify (because GPS not provided in curl)
+- 4: help, returns categories
+- 5: clarify
+
+#### Task 4.2 — Update STATUS.md with deploy marker
+
+Append a new section to STATUS.md:
+```markdown
+---
+
+## Session: 2026-05-XX — Production Deploy
+
+| Service | URL |
+|---|---|
+| Frontend | https://<vercel>.vercel.app |
+| Backend | https://findme-api.onrender.com |
+| Postgres | findme-db (Render Frankfurt, Starter) |
+| Redis | findme-cache (Render Frankfurt, Starter) |
+
+### Verified post-deploy
+- All 5 canonical queries return expected intent and result counts
+- /api/admin/health reports 99.2% embedding coverage on Render Postgres
+- Registration + login work end-to-end
+- Logs stream cleanly via Render MCP
+```
+
+#### Task 4.3 — Commit and push
+
+```bash
+git add STATUS.md
+git commit -m "docs(status): production deploy complete — live at https://<vercel-url>"
+git push origin master
+```
+
+#### Checkpoint 4
+- [ ] All 5 production queries return expected results
+- [ ] STATUS.md updated and pushed
+- [ ] Frontend shareable URL exists
+
+---
+
+### PHASE 5 — Optional polish (post-deploy, no time pressure)
+
+These are not blockers for "is FindMe live?" — do them after you've shared the URL with humans and gotten initial feedback.
+
+#### Task 5.1 — UptimeRobot monitoring (free, 5 min)
+
+Tell the user:
+```
+Sign up free at https://uptimerobot.com.
+Add 2 HTTP monitors, 5-min interval, email alert:
+1. https://findme-api.onrender.com/health
+2. https://<vercel>.vercel.app/
+```
+
+#### Task 5.2 — Custom domain (optional)
+
+If the user registered a domain in pre-flight:
+- Render dashboard: add custom domain `api.<domain>` to findme-api Web Service. Render gives DNS instructions.
+- Vercel dashboard: add `<domain>` and `www.<domain>` to project. Vercel gives DNS instructions.
+- DNS provider: add records as instructed by both Render and Vercel.
+- After SSL provisions: update Vercel `VITE_API_URL` to `https://api.<domain>` and Render `CORS_ORIGINS` to `https://<domain>,https://www.<domain>`.
+
+#### Task 5.3 — Background workers for scheduled scrapers (optional, $14/mo)
+
+If user wants automatic scraping (Shopify weekly, sitemap bi-weekly):
+- Use MCP to create Render Background Worker for `celery -A scraper.scheduler worker -Q scraper`
+- Use MCP to create Render Background Worker for `celery -A scraper.scheduler beat`
+- Same env vars as findme-api
+
+For v1, **skip this**. Run scrapers manually weekly via Render Shell:
+```
+celery -A scraper.scheduler call scraper.scheduler.scrape_buyme_store_list
+```
+
+#### Task 5.4 — Open ANALYTICS.md and run Tier 1 queries
+
+After you've told some real humans about the URL and waited 24 hours, open `ANALYTICS.md` and run the Tier 1 queries via MCP `query_render_postgres`. The decision rules at the bottom of ANALYTICS.md tell you what to do next based on what you see.
+
+---
+
+## ROLLBACK plan
+
+If production breaks badly mid-deploy or in the first 24 hours:
+
+**Frontend rollback (instant):**
+- Vercel dashboard → Deployments → previous successful → "Promote to Production"
+
+**Backend rollback (~2 min):**
+- Render dashboard → findme-api → Manual Deploy → pick a previous successful commit
+- OR via MCP: tell Claude to deploy the previous commit SHA
+
+**Data rollback (drastic, ~30 min):**
+- pg_restore from `/tmp/findme-local.dump` (kept locally) into Render Postgres again
+- Note: any user data created in production (registrations, search history) is lost
+
+---
+
+## HARD RULES
+
+- Never commit `.env*` or any production secrets
+- Never paste API keys directly into chat — use the no-echo zsh pattern: `read -rs "X?Render API key: "`
 - Branch pushed AND CI green AND smoke tests pass = task done. Anything less = not done.
-- After the sprint, delete the local `infra/aws-production-deploy` branch: `git branch -d infra/aws-production-deploy`
+- If a checkpoint fails, **stop and report** — do not "try the next thing"
+- If the Render MCP returns an error, retry once. If it fails again, fall back to dashboard interaction (tell user clearly what to click) rather than escalating
+- All user-facing text must be in Hebrew
 
 ## ─────────────────────────────────────────────────────────────────
 ## END — copy everything above into Claude Code
 ## ─────────────────────────────────────────────────────────────────
+
+---
+
+## Appendix — File-level changelog of pre-deploy fixes
+
+The pre-deploy cleanup phase touches these files. If something breaks during Phase 0, this is your map:
+
+| File | Change | Why |
+|---|---|---|
+| `frontend/src/components/ResultCard.tsx` | Out-of-stock visual treatment | Users were misled by identical styling for sold-out items |
+| `api/routes/chat.py` | Sort in-stock first in search results | Out-of-stock items shouldn't dominate top results |
+| Database (no schema change) | UPDATE store_products SET price=NULL ... | Installment-extracted prices removed from ~10K products at fashion stores |
+| `.venv/` | Recreated from scratch | Old shebangs pointed to non-existent PycharmProjects path |
+| `.env` | Added GOOGLE_MAPS_API_KEY (if user provided) | Enables geocoding for 500 remaining physical stores |
+
+---
+
+## Appendix — What was deliberately deferred
+
+These are valid concerns that we are NOT solving in this deploy:
+
+| Item | Why deferred |
+|---|---|
+| Permanent fix for installment-price scraper | Larger refactor; nulling bad prices ships honest data faster |
+| Adding Tav HaZahav voucher network | Requires multi-voucher schema; not pre-launch critical |
+| Bulk deduplication beyond initial 0.99 threshold | Marginal quality win; do in week 2 with real usage data |
+| Background worker / Celery beat | Saves $14/mo; manual scrapes weekly are fine for v1 |
+| Custom domain | Vercel/Render subdomains work; add domain in week 2 if desired |
+| Mobile-specific UI fixes | Test on mobile after launch; fix what real users complain about |
+
+---
+
+## Appendix — Why this prompt supersedes the older ones
+
+Old `START_PROMPT.md` (now `START_PROMPT_AWS.md`): the AWS-on-EC2 path. Still valid, but more work (~3-5 hours setup vs. ~2 hours here) and ~$50/mo vs. ~$22/mo. Kept for reference if you ever want to migrate FROM Render TO AWS for scale or compliance reasons.
+
+Old `START_PROMPT_RENDER.md`: deleted. Predated the Render MCP — its Phase 1 walked the user through 30 minutes of dashboard clicking. The MCP collapses that to ~5 minutes of natural-language commands to Claude Code.
