@@ -6,17 +6,22 @@ interface Props { result: ProductResult }
 export function ResultCard({ result }: Props) {
   const storeName = result.store.name_he
   const [imgError, setImgError] = useState(false)
+  const inStock = result.availability
 
   const linkUrl = result.product_url ?? result.store.buyme_url
 
+  const cardClass = inStock
+    ? 'bg-white border border-gray-100 rounded-xl shadow-sm p-3 flex flex-col gap-1.5 hover:shadow-md transition-shadow'
+    : 'bg-gray-50 border border-gray-200 rounded-xl shadow-sm p-3 flex flex-col gap-1.5 opacity-60'
+
   return (
-    <div className="bg-white border border-gray-100 rounded-xl shadow-sm p-3 flex flex-col gap-1.5 hover:shadow-md transition-shadow">
+    <div className={cardClass}>
       {/* Product image */}
       {result.image_url && !imgError && (
         <img
           src={result.image_url}
           alt={result.canonical_name}
-          className="w-full h-24 object-cover rounded-lg mb-1"
+          className={`w-full h-24 object-cover rounded-lg mb-1${inStock ? '' : ' grayscale'}`}
           onError={() => setImgError(true)}
         />
       )}
@@ -31,7 +36,7 @@ export function ResultCard({ result }: Props) {
 
       {/* Price */}
       {result.price != null ? (
-        <span className="text-green-600 font-semibold text-sm">
+        <span className={`font-semibold text-sm ${inStock ? 'text-green-600' : 'text-gray-500 line-through'}`}>
           ₪{result.price.toLocaleString('he-IL')}
         </span>
       ) : (
@@ -39,12 +44,18 @@ export function ResultCard({ result }: Props) {
       )}
 
       {/* Availability + meta row */}
-      <div className="flex items-center gap-2 text-xs text-gray-400">
-        <span className={result.availability ? 'text-green-500' : 'text-gray-400'}>●</span>
-        <span>{result.availability ? 'במלאי' : 'אזל'}</span>
-        {result.store.city && <span>· {result.store.city}</span>}
+      <div className="flex items-center gap-2 text-xs flex-wrap">
+        {inStock ? (
+          <>
+            <span className="text-green-500">●</span>
+            <span className="text-gray-400">במלאי</span>
+          </>
+        ) : (
+          <span className="text-red-600 font-semibold bg-red-50 px-2 py-0.5 rounded">אזל המלאי</span>
+        )}
+        {result.store.city && <span className="text-gray-400">· {result.store.city}</span>}
         {result.store.distance_km != null && (
-          <span>· {result.store.distance_km.toFixed(1)} ק"מ</span>
+          <span className="text-gray-400">· {result.store.distance_km.toFixed(1)} ק"מ</span>
         )}
       </div>
 
@@ -53,9 +64,9 @@ export function ResultCard({ result }: Props) {
         href={linkUrl || '#'}
         target="_blank"
         rel="noopener noreferrer"
-        className="mt-1 text-blue-600 text-xs hover:underline"
+        className={`mt-1 text-xs ${inStock ? 'text-blue-600 hover:underline' : 'text-gray-400 hover:underline'}`}
       >
-        לרכישה ←
+        {inStock ? 'לרכישה ←' : 'לפרטים ←'}
       </a>
     </div>
   )

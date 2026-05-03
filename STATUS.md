@@ -1015,3 +1015,51 @@ c797572  fix(api,frontend): mount all routes under /api/* prefix consistently
 c0829b5  docs(deploy): add Phase 0, ANALYTICS playbook, Render+Vercel alternative prompt
 ```
 
+---
+
+## Session: 2026-05-03 (later) — Phase 0 partial cleanup + BMad scaffolding
+
+Worked from worktree `claude/condescending-mahavira-1ab415`. Two commits pushed.
+
+### What landed
+
+| # | Task | Status | Notes |
+|---|---|---|---|
+| 0.2 | Null installment-extracted prices | ⏭️ **Skipped (user decision)** | Read-only impact preview ran: 8,172 rows would be nulled across FOX (2,444) / SWEETWEET (908) / רשת Bגוד (835) / Babystar (827) / אהבה קטנה (759) / Fox Home (694) / SOHO (666) / שילב (657) / Femina (382). Min ₪0, max ~₪40 — pattern matches installment diagnosis. User opted to deploy with bogus prices visible; revisit week 1 post-launch with permanent scraper fix per Story 3.1 of the new epics.md. |
+| 0.3 | Out-of-stock UI + in-stock-first sort | ✅ Done | `frontend/src/components/ResultCard.tsx`: opacity-60, gray-50 bg, grayscale image, line-through price, prominent red `אזל המלאי` badge, "לפרטים ←" muted link for sold-out items. `api/routes/chat.py`: `_run_product_search` now sorts `(availability desc, similarity desc)` so in-stock results lead. 29/29 tests still pass. Frontend build clean (824ms, 80 modules). Commit `6792141`. |
+| 0.4 | Recreate venv | ⏭️ Deferred | `.venv` lives in the main checkout (`/Users/barakganon/personal_projects/FindMe/.venv`), not the worktree. Recreate from main checkout when next there. |
+| 0.5 | Run tests | ✅ Done | `29 passed in 6.22s` against the existing main-checkout venv. |
+| 0.6 | Google Maps geocoding | ✅ Done | Geocoded 650/650 candidate stores (650 via Google, 0 via Nominatim, 0 failed). Stores total: now 1,076 / 1,236 with coords (was 426 / 1,236) — +650 net new. ~$3.25 estimated Google Maps cost. The 160 still missing are stores without resolvable Hebrew addresses (typically ambiguous mall names). |
+| 0.7 | Bulk deduplication at 0.95 | ⏭️ **Skipped (perf)** | Dry-run hit ~166ms/iteration × 134K products → ~6h. Killed and deferred. Same `deduplicate_products` algorithm is wired into `scraper/scheduler.py:run_deduplication` to run weekly on Mondays via Celery beat — once Story 2.3 (background workers, $14/mo) lands, this runs automatically. Until then, manual trigger from Render Shell post-deploy is acceptable. The slow path is a real issue worth a follow-up (batch SQL approach instead of per-product query) but does not block launch. |
+
+### BMad scaffolding (commit `d61503b`)
+
+Bootstrapped:
+- `_bmad-output/planning-artifacts/epics.md` — 4 epics, 12 stories, grounded in code audit
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` — Epic 1 in-progress, Story 1.1 ready-for-dev
+- `_bmad-output/implementation-artifacts/README.md` — explains why Stories 1.1–1.4 deliberately have no per-story spec files (START_PROMPT.md is the spec)
+
+Future `/bmad-create-story` and `/bmad-dev-story` runs will auto-discover correctly.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| `npm run build` (frontend) | ✅ 824ms, 80 modules, no errors |
+| `pytest tests/` | ✅ 29 passed in 6.22s |
+| `git status` post-commits | ✅ clean |
+| Geocoded stores | 426 → 1,076 (+650) |
+
+### Commits this session (worktree)
+
+```
+d61503b  docs(bmad): bootstrap epics.md and sprint-status.yaml
+6792141  fix(ui,chat): demote out-of-stock products and sort in-stock first
+```
+
+### Open follow-ups
+
+- **Run installment-price UPDATE before exposing to users.** 8,172 rows of bogus prices still in DB. Either commit Option 1 (null) before deploy or accept that real users will see ~6% misleadingly cheap items at the top of fashion/baby store searches.
+- **Dedup perf rewrite.** Replace per-product loop in `normalization/deduplication.py` with a batched SQL self-join + window function; current implementation is unusable at full scale.
+- **Recreate venv from main checkout.** Workaround in place but shebangs still broken.
+

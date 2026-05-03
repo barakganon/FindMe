@@ -355,7 +355,7 @@ async def _run_product_search(
             seen_merged.add(key)
             merged.append(dict(r))
 
-    merged.sort(key=lambda x: float(x["similarity"]), reverse=True)
+    merged.sort(key=lambda x: (0 if x["availability"] else 1, -float(x["similarity"])))
 
     # Apply filters and collect results
     results: list[ProductResult] = []
