@@ -1,0 +1,80 @@
+# FindMe Sprint Status
+# Generated: 2026-05-03
+# Source: _bmad-output/planning-artifacts/epics.md
+#
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created, ready for development
+#   - in-progress: Developer actively working on implementation
+#   - review: Implementation complete, ready for review
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# IMPORTANT — FindMe-specific deviation from BMad defaults:
+# =========================================================
+# Stories 1.1–1.4 are intentionally marked `ready-for-dev` WITHOUT a per-story
+# spec file in this directory. The implementation spec is the existing
+# START_PROMPT.md at the repo root (Phases 0–4 map 1:1 to Stories 1.1–1.4).
+#
+# This is documented in README.md alongside this file. If you run
+# /bmad-dev-story against any of 1-1..1-4, point it at START_PROMPT.md as the
+# story_path. For Stories 3.x and 4.x, run /bmad-create-story normally — those
+# are multi-day code work where the BMad ceremony pays off.
+
+generated: 2026-05-03
+last_updated: 2026-05-03
+project: FindMe
+project_key: FM
+tracking_system: file-system
+story_location: "{project-root}/_bmad-output/implementation-artifacts"
+
+development_status:
+  # ─────────────────────────────────────────────────────────────────────
+  # Epic 1 — Public Launch (in flight)
+  # Spec source: START_PROMPT.md (Phases 0–4)
+  # ─────────────────────────────────────────────────────────────────────
+  epic-1: in-progress
+  1-1-pre-deploy-cleanup: ready-for-dev          # START_PROMPT Phase 0
+  1-2-render-infra-and-data-migration: backlog   # START_PROMPT Phases 1-2
+  1-3-vercel-frontend-and-cors: backlog          # START_PROMPT Phase 3
+  1-4-production-smoke-test: backlog             # START_PROMPT Phase 4
+  epic-1-retrospective: optional
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Epic 2 — Post-launch hardening (analytics-driven)
+  # ─────────────────────────────────────────────────────────────────────
+  epic-2: backlog
+  2-1-uptimerobot-monitoring: backlog
+  2-2-first-week-analytics-passes: backlog
+  2-3-background-workers: backlog                # decision-gated (+$14/mo)
+  epic-2-retrospective: optional
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Epic 3 — Data quality Phase 2
+  # Unblocked by Story 2.2 findings — order driven by analytics, not guess
+  # ─────────────────────────────────────────────────────────────────────
+  epic-3: backlog
+  3-1-permanent-installment-price-fix: backlog
+  3-2-fill-thin-geo-categories: backlog
+  3-3-store-enrichment-chain-rollout: backlog
+  epic-3-retrospective: optional
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Epic 4 — Multi-voucher network expansion
+  # Hard-blocked: do not start until Epics 1+2 complete and stable
+  # ─────────────────────────────────────────────────────────────────────
+  epic-4: backlog
+  4-1-tav-hazahav-scraper: backlog
+  4-2-frontend-network-selector: backlog
+  4-3-nofshonit-scraper: backlog
+  epic-4-retrospective: optional
