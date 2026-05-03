@@ -857,3 +857,161 @@ Notes:
 | `deployment/DEPLOY.md` | S3 OAC bucket policy fix, Monitoring Strategy section, Useful Commands restored |
 | `.github/workflows/deploy-frontend.yml` | JS bundle check added to smoke test |
 | `_bmad-output/project-context.md` | New — 76 LLM implementation rules |
+
+---
+
+## Session: 2026-05-03 — Pre-deploy Audit, Local Stack Fixes & Critical Data Bug
+
+> Goal: stand up local dev end-to-end and validate before shipping to Render.
+> Outcome: local stack working, 4 latent bugs fixed, **1 critical data-quality bug discovered (installment-price extraction)**.
+
+### 🔴 CRITICAL — Installment-price extraction bug at fashion/baby stores
+
+**Discovered while testing UI:** scrapers at multiple fashion and baby stores have grabbed the **per-month installment price** instead of the **lump-sum price**. Users see misleadingly low prices in results; clicking through reveals the real price is much higher.
+
+**Confirmed offender — FOX (random sample of products under ₪50):**
+
+| Product | DB price | Plausible real price |
+|---|---|---|
+| קפוצ'ון פליז פוקס (fleece hoodie) | ₪20 | ₪150–300 |
+| מכנסי טק (tech pants) | ₪30 | ₪200+ |
+| טישרט בייסיק (basic t-shirt) | ₪40 | ₪80–120 |
+| סריג (sweater) | ₪45 | ₪150+ |
+| מכנסי פיג'מה פלאנל (flannel pajama pants) | ₪30 | ₪100+ |
+
+**Stores at risk** (count of products priced ₪1–50 — many likely installment-extracted):
+
+| Store | Suspicious products | Notes |
+|---|---|---|
+| FOX | 2,991 | Confirmed bug — sampled hoodies/pants/tees at impossible prices |
+| שילב | 1,420 | Likely same pattern (fashion) |
+| רשת Bגוד | 1,299 | Likely same pattern (fashion) |
+| Babystar | 1,195 | Need to sample (baby products vary widely) |
+| SOHO | 1,172 | Likely same pattern (fashion) |
+| אהבה קטנה | 1,029 | Need to sample |
+| SWEETWEET | 969 | Need to sample |
+| מוצצים | 965 | Need to sample (baby products vary widely) |
+| Femina | 893 | Likely same pattern |
+| תחביבן | 848 | Crafts — many genuinely cheap items, may be legit |
+
+**Total exposure:** ~13,008 products priced ₪1–30 across catalog (~7% of all `store_products`).
+**CrypTech is NOT affected** — sample showed real prices for genuine cheap accessories (USB adapters, RJ45 cables at ₪1–4).
+
+**Why this matters:** wrong prices destroy user trust faster than missing prices. A user who sees "₪40 t-shirt" → clicks → finds ₪200 will not return.
+
+**Decision (recommended, not yet executed):**
+- Quick fix before deploy: `UPDATE store_products SET price = NULL WHERE store_id IN (FOX, Fox Home, שילב, רשת Bגוד, Babystar, SOHO, אהבה קטנה, SWEETWEET, Femina) AND price < 40;` — frontend already shows "מחיר לא זמין" for null prices. ~10K rows nulled.
+- Real fix (week 1 post-launch): inspect each scraper's price extraction logic, identify the installment selector, fix to grab lump-sum, re-scrape affected stores.
+
+### 🟡 UI bug — Out-of-stock visual treatment too subtle
+
+`ResultCard.tsx` renders out-of-stock products almost identically to in-stock:
+- Same white background, same text colors
+- Only difference: tiny gray "● אזל" vs green "● במלאי" dot+text
+- "לרכישה ←" link is identically styled and active for both states
+- Users land on store page, only then see "אזל המלאי" in red
+
+**Fix needed:** muted opacity, gray background, prominent "אזל" badge, disable or relabel the purchase link for out-of-stock items.
+
+### Local dev stack — startup fixes (all merged to master)
+
+**4 latent bugs caught while standing up local dev:**
+
+| Bug | Root cause | Fix | Branch |
+|---|---|---|---|
+| `claude mcp list` showed Render MCP missing despite `claude mcp add` reporting success | First `add` attempt got wedged on interactive permission prompt; partial state was rolled back | Re-ran `claude mcp add render https://mcp.render.com/mcp -t http -s user -H "Authorization: Bearer ..."` with output capture; verified via `claude mcp get render` | Render MCP at `~/.claude.json` |
+| Stale uvicorn from `PycharmProjects/PythonProject/FindMe` running since Apr 2 was hijacking port 8000, serving the OLD codebase | Project moved to `personal_projects/FindMe` but the old uvicorn was never killed | Killed PID 5262, restarted from new path | (operational) |
+| Stale Vite dev server holding port 5173 from old PycharmProjects path | Same as above — old process never cleaned up | Killed; restarted Vite from correct path | (operational) |
+| `.venv/bin/uvicorn` (and all other script wrappers) have hardcoded shebang `#!/Users/barakganon/PycharmProjects/PythonProject/FindMe/.venv/bin/python` — broken when invoked directly | Project move didn't update venv-internal shebangs (Python doesn't relocate scripts on rename) | **Workaround in place:** invoke as `.venv/bin/python -m uvicorn` (bypasses shebang). **Real fix pending:** recreate venv (`rm -rf .venv && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`) | (pending) |
+
+### API route prefix consistency — fix shipped
+
+**Bug:** `search` and `stores` routers were mounted at root (`/search`, `/stores/search`), while `chat`, `admin`, `auth`, `users` were under `/api/*`. The Vite proxy compensated with a rewrite that stripped `/api` — but that broke `/api/chat` (frontend `/api/chat` → strip → backend `/chat` = 404, since chat is at `/api/chat`).
+
+**Worse for production:** `frontend/src/api.ts` had `API_BASE = 'http://localhost:8000'` hardcoded for auth/users calls. Deployed frontend would have called localhost from users' browsers → all auth broken in production.
+
+**Fix (commit `c797572` → master `a5ba0df`):**
+- `api/main.py`: mounted `search` and `stores` under `prefix="/api"` to match the rest
+- `frontend/vite.config.ts`: dropped the rewrite, `/api` passes through cleanly
+- `frontend/src/api.ts`: replaced hardcoded host with `import.meta.env.VITE_API_URL ?? ''` (empty in dev → relative URL through Vite proxy; set to `https://api.<domain>` in Vercel for prod)
+
+### Dockerfile — Playwright build failure fix
+
+**Bug:** `playwright install chromium --with-deps` fails on Debian Bookworm. Render's build (and any AWS Docker build) would have crashed at this step.
+
+**Cause:** Playwright's installer references `ttf-unifont` and `ttf-ubuntu-font-family` apt packages — both were renamed/removed in Debian Bookworm.
+
+**Fix (commit `2354f5b` → master `c7e3e7d`):** drop `--with-deps` from the Playwright install step. The runtime libraries Chromium actually needs (libnss3, libatk1.0-0, libxcomposite1, libgbm1, etc.) are already installed manually in the Dockerfile via the previous `apt-get install` step.
+
+Verified locally: `docker build` now completes cleanly (ARM build for sanity check; amd64 will be tested on Render).
+
+### chat.py rate-limiter regression fix
+
+**Bug:** the morning's "changes" commit (`dd389cc`) re-added `@limiter.limit("20/minute")` to the `/api/chat` route, which the earlier circular-import fix had specifically removed. Combined with `from __future__ import annotations`, SlowAPI's wrapper breaks FastAPI's `get_type_hints()` resolution → POST `/api/chat` returned 422 for all requests, 8 tests failed.
+
+**Fix (commit `287e485` → master `814cf8a`):** removed the `@limiter.limit` decorator and the unused `from api.dependencies import limiter` import. Global 200/min via `SlowAPIMiddleware` still applies.
+
+### Render MCP — wired up via Claude Code
+
+| Item | Result |
+|---|---|
+| Server URL | `https://mcp.render.com/mcp` |
+| Auth | Bearer token via API key (Account Settings → API Keys) |
+| Scope | User (top-level `mcpServers` in `~/.claude.json`) |
+| Tools available | `list_workspaces`, `set_workspace`, `list_services`, `create_postgres`, `create_keyvalue`, `create_web_service`, `update_environment_variables`, `list_logs`, `get_metrics`, `query_render_postgres`, etc. |
+| Verified working | ✅ Listed user's workspace ("My Workspace") and auto-selected it |
+
+**Security note:** original API key was leaked in chat (truncated 36-char key, was rejected anyway). Replaced via no-echo zsh-syntax one-liner: `read -rs "KEY?Render API key: " && curl ... && claude mcp add ... && unset KEY`. New key validates against Render REST API and works in MCP.
+
+### End-to-end test results (after all fixes)
+
+| Test | Result |
+|---|---|
+| `pytest tests/ -q` | ✅ 29 passed |
+| Backend `/health` (fresh uvicorn) | ✅ 200 OK |
+| `/api/admin/health` | ✅ 99.2% embedded, DB+Redis up |
+| Backend chat: `אוזניות סוני בבת ים` | ✅ 10 products, top: gaming headphones ₪56 |
+| Backend chat: `תמצא מסעדות באילת` | ⚠️ 0 stores — DATA GAP, not a bug (Eilat has 7 stores total, 0 tagged restaurant) |
+| Backend chat: `מה אפשר לקנות ב-BuyMe?` | ✅ help intent, returns categories |
+| Backend chat: `אני רוצה ל` (incomplete) | ✅ clarify intent, graceful Hebrew question |
+| Frontend at http://localhost:5173 | ✅ Renders, RTL working, BuyMe badge, suggestion chips |
+| Frontend → backend chat (via Vite proxy) | ✅ Real query returns 10 products in 8.6s |
+
+### Known issues — pre-deploy backlog
+
+| # | Issue | Severity | Status |
+|---|---|---|---|
+| 1 | Installment-price extraction bug at FOX (~3K), שילב (~1.4K), and ~7 other stores | 🔴 Critical | **Decision needed: null bad prices before deploy, or fix scrapers first** |
+| 2 | Out-of-stock visual treatment too subtle in `ResultCard.tsx` | 🟡 Medium | Fix before deploy (~30 min UI work) |
+| 3 | Venv shebangs point to old `PycharmProjects` path | 🟡 Medium | Workaround in place; recreate venv before deploy |
+| 4 | Eilat restaurants returns 0 results | 🟢 Low | Data gap, not a bug — let analytics surface it post-launch |
+| 5 | 500 stores still ungeocoded | 🟢 Low | `GOOGLE_MAPS_API_KEY` needed; ready to run |
+| 6 | Bulk deduplication not run | 🟢 Low | 10 merges confirmed at 0.99 threshold; ready to run |
+
+### Files changed this session
+
+| File | Change |
+|---|---|
+| `api/main.py` | Mounted search/stores under `/api/*` prefix |
+| `api/routes/chat.py` | Removed regressed `@limiter.limit("20/minute")` decorator and unused import |
+| `frontend/vite.config.ts` | Dropped `/api` proxy rewrite |
+| `frontend/src/api.ts` | Replaced hardcoded `localhost:8000` with `VITE_API_URL` env |
+| `Dockerfile` | Dropped `--with-deps` from Playwright install |
+| `CLAUDE.md`, `START_PROMPT.md`, `START_PROMPT_RENDER.md` | Updated PycharmProjects → personal_projects path |
+| `ANALYTICS.md` (new) | First-week post-launch SQL playbook |
+| `START_PROMPT_RENDER.md` (new) | Render+Vercel deploy alternative (~$22/mo, 90 min) |
+| `~/.claude.json` (user-only, not in repo) | Render MCP server registered under user scope |
+
+### Master commits this session
+
+```
+dd0ca29  docs: update project path references from PycharmProjects to personal_projects
+c7e3e7d  Merge: fix Docker build for Render/AWS deploy
+2354f5b  fix(docker): drop --with-deps from playwright install (Debian Bookworm)
+a5ba0df  Merge: fix API path mismatch + production frontend host
+c797572  fix(api,frontend): mount all routes under /api/* prefix consistently
+814cf8a  Merge: restore /api/chat tests
+287e485  fix(chat): remove @limiter.limit decorator regression that broke 8 tests
+c0829b5  docs(deploy): add Phase 0, ANALYTICS playbook, Render+Vercel alternative prompt
+```
+
