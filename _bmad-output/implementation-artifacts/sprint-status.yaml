@@ -20,19 +20,19 @@
 #   - optional: Can be completed but not required
 #   - done: Retrospective has been completed
 #
-# IMPORTANT — FindMe-specific deviation from BMad defaults:
-# =========================================================
-# Stories 1.1–1.4 are intentionally marked `ready-for-dev` WITHOUT a per-story
-# spec file in this directory. The implementation spec is the existing
-# START_PROMPT.md at the repo root (Phases 0–4 map 1:1 to Stories 1.1–1.4).
+# Story files in this directory are minimal stubs that POINT AT START_PROMPT.md.
+# The actual implementation spec lives in START_PROMPT.md at the repo root —
+# Phases 1–4 map 1:1 to Stories 1.2–1.4. This keeps START_PROMPT.md as the
+# single source of truth for the deploy plan while still letting BMad's
+# auto-discovery work (the workflow strictly requires <story_key>.md files
+# to exist).
 #
-# This is documented in README.md alongside this file. If you run
-# /bmad-dev-story against any of 1-1..1-4, point it at START_PROMPT.md as the
-# story_path. For Stories 3.x and 4.x, run /bmad-create-story normally — those
-# are multi-day code work where the BMad ceremony pays off.
+# For Stories 3.x and 4.x (post-launch code work), run /bmad-create-story
+# normally — those generate full per-story specs because the multi-day code
+# work justifies the ceremony.
 
 generated: 2026-05-03
-last_updated: 2026-05-03
+last_updated: 2026-05-04
 project: FindMe
 project_key: FM
 tracking_system: file-system
@@ -44,8 +44,8 @@ development_status:
   # Spec source: START_PROMPT.md (Phases 0–4)
   # ─────────────────────────────────────────────────────────────────────
   epic-1: in-progress
-  1-1-pre-deploy-cleanup: ready-for-dev          # START_PROMPT Phase 0
-  1-2-render-infra-and-data-migration: backlog   # START_PROMPT Phases 1-2
+  1-1-pre-deploy-cleanup: done                   # Phase 0 — partial; deferred ACs documented in STATUS.md
+  1-2-render-infra-and-data-migration: ready-for-dev  # START_PROMPT Phases 1-2 — NEXT
   1-3-vercel-frontend-and-cors: backlog          # START_PROMPT Phase 3
   1-4-production-smoke-test: backlog             # START_PROMPT Phase 4
   epic-1-retrospective: optional
