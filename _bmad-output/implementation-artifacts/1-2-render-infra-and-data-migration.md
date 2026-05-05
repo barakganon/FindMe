@@ -1,6 +1,6 @@
 # Story 1.2: Provision Render infra + migrate data
 
-Status: ready-for-dev
+Status: backlog
 
 > **Spec source of truth:** [START_PROMPT.md](../../START_PROMPT.md) Phases 1–2.
 > This file is a thin BMad-shaped index over those phases — DO NOT duplicate
