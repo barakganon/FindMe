@@ -32,7 +32,7 @@
 # work justifies the ceremony.
 
 generated: 2026-05-03
-last_updated: 2026-05-04
+last_updated: 2026-05-07
 project: FindMe
 project_key: FM
 tracking_system: file-system
@@ -45,9 +45,10 @@ development_status:
   # ─────────────────────────────────────────────────────────────────────
   epic-1: in-progress
   1-1-pre-deploy-cleanup: done                   # Phase 0 — partial; deferred ACs documented in STATUS.md
-  1-2-render-infra-and-data-migration: ready-for-dev  # START_PROMPT Phases 1-2 — NEXT
+  1-2-render-infra-and-data-migration: backlog  # paused — running private beta first (see 1.5 below)
   1-3-vercel-frontend-and-cors: backlog          # START_PROMPT Phase 3
   1-4-production-smoke-test: backlog             # START_PROMPT Phase 4
+  1-5-private-beta-qa-fixes: ready-for-dev       # 9 ACs from 2026-05-05/06 QA pass — ACTIVE
   epic-1-retrospective: optional
 
   # ─────────────────────────────────────────────────────────────────────
