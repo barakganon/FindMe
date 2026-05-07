@@ -188,6 +188,62 @@ status: draft (pending user review)
 
 ---
 
+### Story 1.5 — Private-beta QA blocker fixes
+
+**As** the operator running a private beta with friends and family
+**I want** the 5 BLOCK-tier issues found during the 2026-05-05/06 solo QA pass fixed
+**So that** non-developer users get a working app on first impression rather than seeing earrings when they search for Sony headphones
+
+**Source:** [_bmad-output/qa-findings/2026-05-05-solo-qa.md](../qa-findings/2026-05-05-solo-qa.md)
+
+**Acceptance criteria (all BLOCK-tier — must ship together):**
+
+1. **F-11 city matching expanded.** "מסעדות בתל אביב" returns ≥ 50 stores from the `ת"א והסביבה` BuyMe bucket (currently 1). Synonym map handles: `תל אביב` ↔ `ת"א` ↔ `ת״א` ↔ `תא` ↔ `יפו` ↔ `ת"א והסביבה`. Same treatment for Jerusalem (ירושלים ↔ י-ם ↔ ירושלים והסביבה), Haifa (חיפה ↔ חיפה והסביבה), and the 5 other BuyMe regional buckets that include a recognizable city name.
+
+2. **F-01/F-08 brand+category search relevance.** When the parsed intent has a non-null `brand`, search results are restricted to products where `products.brand ILIKE '%<brand>%'`. "Sony headphones" returns Sony products only, no Edifier in the top slot. "Apple Watch" returns watches (not Lightning cables). If the brand filter would yield 0 results, fall back to fuzzy match with a clarifying note in the response message.
+
+3. **F-02 intent parser determinism.** Gemini intent-parse calls use `temperature=0`. Running the same query 10× returns the same `intent` and `needs_user_location` value 10/10 times. Specifically: "מסעדות בתל אביב" is `store_search` 10/10 (was ~80%); "כיסא ארגונומי לעבודה" is `product_search` 10/10.
+
+4. **F-04 reply text never contradicts results.** Response composer cannot output a "no results" framing (לא מצאנו, לא נמצא, etc.) when `len(product_results) > 0`. Enforce in code, not in prompt.
+
+5. **F-09 single brand name returns product_search.** "סמסונג" / "Apple" / "Sony" alone routes to `product_search` with the brand applied, not clarify. Specific test: "סמסונג" returns ≥ 5 products, all with `brand ILIKE '%samsung%'`.
+
+6. **F-03 needs_location synonyms.** Belt-and-suspenders regex post-processing in the chat handler: if the user message matches `(?i)(לידי|באזור שלי|קרוב אלי|קרוב|פה|כאן|near me|by me)`, force `parsed.needs_user_location = True` regardless of what Gemini returned. "חנויות בגדים באזור שלי" returns `needs_location=True`.
+
+7. **F-13 query-time dedup.** When merging hybrid search results, deduplicate by `canonical_name + normalized_price` (where `normalized_price = round(price, 0) if price else 0`). "איפור" no longer returns 4 identical Niveah Rose Care rows.
+
+8. **F-05 / F-12 hide product_count for non-retail stores.** `StoreCard.tsx` hides the `מוצרים` count when `buyme_category` is one of `restaurant`, `spa`, `hotel`, `leisure`. Restaurant cards no longer claim "0 products".
+
+9. **F-06 no English fragments in Hebrew replies.** Response composer never quotes the parsed `product_query` or `store_type` value back to the user. "ספא בירושלים" reply does not contain the word `spa`. Verified via 5-query manual sample.
+
+**Decisions baked in (from user 2026-05-07):**
+
+- F-01 fix approach: **strict brand filter** with empty-fallback to fuzzy
+- F-11 fix scope: **synonym map only** for now; geo-radius fallback deferred to Story 3.2
+- F-13 dedup approach: **query-time dedup** now; algorithm rewrite deferred to Story 3.1
+
+**Test gates:**
+
+- All 9 ACs validated by re-running the relevant entries from the QA battery in [qa-findings/2026-05-05-solo-qa.md](../qa-findings/2026-05-05-solo-qa.md)
+- 29/29 existing tests still pass (no regressions on auth, cache, anonymous fallback, OOS sort, SQL safety)
+- New unit tests: brand filter behavior (F-01), city synonym expansion (F-11), location regex (F-03), price-based dedup (F-13), reply contradiction guard (F-04)
+
+**Out of scope (deferred to other stories or future sessions):**
+
+- Permanent installment-price scraper rewrite (Story 3.1 already covers this)
+- Geo-radius store search fallback (Story 3.2)
+- Bulk dedup algorithm rewrite (separate future story)
+- F-07 wrong-category store tagging (Story 3.3 covers this)
+- Batteries 2-7 fix-soon issues that didn't make BLOCK tier — these stay open in qa-findings doc for a future Story 1.6 if needed
+
+**Dependencies:** none (all changes are within already-shipped code).
+
+**Estimate:** 1.5–2 dev days for all 9 ACs.
+
+**Status:** ready-for-dev
+
+---
+
 ## Epic 2: Post-launch hardening — keep it up, learn from real users
 
 **Goal:** Detect outages within minutes and turn the first 7 days of real usage into product decisions.
