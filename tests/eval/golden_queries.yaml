@@ -1,0 +1,418 @@
+# tests/eval/golden_queries.yaml
+# ------------------------------------------------------------------------
+# FindMe v2 — Eval harness golden query set (W1 deliverable)
+#
+# Format per query:
+#   id:                   unique kebab-case slug
+#   query:                user message text (Hebrew or English)
+#   history:              optional — previous turns for multi-turn tests
+#                         [{role: user|assistant, content: str}, ...]
+#   expected_intent:      product_search | store_search | help | clarify
+#   expected_brand:       optional — if set, top result's brand must match (case-insensitive substring)
+#                         For top-N matching: use brand_in_top: 3 (default 1)
+#   expected_city:        optional — top result's store.city must match (case-insensitive substring)
+#   expected_max_price:   optional — all returned results must have price <= this (when not null)
+#   expected_needs_location: bool — must match ChatResponse.needs_location
+#   expected_has_results: bool — must match (len(product_results)+len(store_results) > 0)
+#   expected_tool_calls:  list — for v2 use only (W2+). Each item: {tool: str, args: dict}
+#   notes:                free-form — usually pointer to QA finding (F-XX) or scenario name
+#
+# Coverage map (each query tagged below in notes):
+#   F-01/F-08  brand+category relevance        → headphones-*, watch-*
+#   F-02       intent determinism (temp=0)     → restaurants-tlv-named, ergonomic-chair
+#   F-03       needs_location synonyms         → restaurants-near-me-*, location-synonym-*
+#   F-04       reply contradicts results       → no-results-* (scored via guard)
+#   F-09       single brand returns clarify    → brand-only-*
+#   F-11       city matching with bucket map   → tlv-restaurants, jerusalem-spa
+#   F-13       query-time dedup                → makeup-dedup
+#   Edge       SQL inject, emoji, long, empty  → edge-*
+#   Sally     canonical scenarios for v2      → sally-sarah, sally-yael, sally-avi,
+#                                                sally-rinat, sally-mind-changer
+#
+# When updating: any new query must add at least one dimension tag in notes
+# so the per-dimension score breakdown in runner.py output stays meaningful.
+# ------------------------------------------------------------------------
+
+queries:
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SECTION 1 — Brand + category (Hebrew) — F-01/F-08
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: headphones-sony-hebrew
+    query: "אוזניות סוני"
+    expected_intent: product_search
+    expected_brand: sony
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-01 — top result currently returns 'עגילי סאני' (Sani earrings)"
+
+  - id: headphones-sony-with-price
+    query: "אוזניות סוני עד 300 שקל"
+    expected_intent: product_search
+    expected_brand: sony
+    expected_max_price: 300
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-01 + price filter"
+
+  - id: watch-apple-hebrew
+    query: "שעון אפל"
+    expected_intent: product_search
+    expected_brand: apple
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-08 — currently returns Lightning earphones / cables instead of watches"
+
+  - id: headphones-sony-exact-model
+    query: "Sony WH-1000XM5"
+    expected_intent: product_search
+    expected_brand: sony
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-08 — exact model lookup, top result must be Sony"
+
+  - id: shoes-nike-hebrew
+    query: "נעלי נייקי"
+    expected_intent: product_search
+    expected_brand: nike
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-01 — Nike brand+category, common Israeli use case"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SECTION 2 — Single brand only — F-09
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: brand-only-samsung
+    query: "סמסונג"
+    expected_intent: product_search
+    expected_brand: samsung
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-09 — single brand currently returns clarify; should browse Samsung"
+
+  - id: brand-only-apple-english
+    query: "Apple"
+    expected_intent: product_search
+    expected_brand: apple
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-09 — English single brand"
+
+  - id: brand-only-sony
+    query: "Sony"
+    expected_intent: product_search
+    expected_brand: sony
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-09 — English single brand"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SECTION 3 — City matching with bucket synonyms — F-11
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: tlv-restaurants
+    query: "מסעדות בתל אביב"
+    expected_intent: store_search
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-11 — currently returns 1 result; TLV bucket holds 407 stores"
+
+  - id: tlv-restaurants-short
+    query: "מסעדות בת״א"
+    expected_intent: store_search
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-11 — alternative TLV spelling (ת״א)"
+
+  - id: tlv-restaurants-no-quote
+    query: "מסעדות בתא"
+    expected_intent: store_search
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-11 — alternative TLV spelling (תא, no quote)"
+
+  - id: jerusalem-spa
+    query: "ספא בירושלים"
+    expected_intent: store_search
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-11 + F-06 — also tests no English fragment in reply"
+
+  - id: haifa-restaurants
+    query: "מסעדות בחיפה"
+    expected_intent: store_search
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-11 — Haifa bucket"
+
+  - id: eilat-restaurants
+    query: "מסעדות באילת"
+    expected_intent: store_search
+    expected_needs_location: false
+    # Known data gap — Eilat may have no restaurants in catalog.
+    # Test scores intent classification correctly even when empty.
+    expected_has_results: false
+    notes: "F-11 + known data gap (Eilat restaurants)"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SECTION 4 — needs_location synonyms — F-03
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: restaurants-near-me-lidi
+    query: "מסעדות לידי"
+    expected_intent: store_search
+    expected_needs_location: true
+    expected_has_results: false
+    notes: "F-03 — לידי trigger (the only one that currently works)"
+
+  - id: clothing-near-me-bezor
+    query: "חנויות בגדים באזור שלי"
+    expected_intent: store_search
+    expected_needs_location: true
+    expected_has_results: false
+    notes: "F-03 — באזור שלי trigger (currently broken)"
+
+  - id: restaurants-near-me-karov
+    query: "מסעדות קרוב אלי"
+    expected_intent: store_search
+    expected_needs_location: true
+    expected_has_results: false
+    notes: "F-03 — קרוב אלי trigger (currently broken)"
+
+  - id: shops-near-me-english
+    query: "shops near me"
+    expected_intent: store_search
+    expected_needs_location: true
+    expected_has_results: false
+    notes: "F-03 — English near-me trigger"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SECTION 5 — Intent determinism (must be consistent) — F-02
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: ergonomic-chair-determinism
+    query: "כיסא ארגונומי לעבודה"
+    expected_intent: product_search
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-02 — currently ~80% product_search, ~20% clarify (random)"
+
+  - id: restaurants-tlv-determinism
+    query: "מסעדות בתל אביב"
+    expected_intent: store_search
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-02 + F-11 — must be store_search 10/10 (currently ~80%)"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SECTION 6 — Help intent
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: help-what-can-i-buy
+    query: "מה אפשר לקנות ב-BuyMe?"
+    expected_intent: help
+    expected_needs_location: false
+    expected_has_results: false
+    notes: "Help intent — canonical phrasing"
+
+  - id: help-how-does-it-work
+    query: "איך זה עובד?"
+    expected_intent: help
+    expected_needs_location: false
+    expected_has_results: false
+    notes: "Help intent — generic Hebrew phrasing"
+
+  - id: help-english
+    query: "what is this?"
+    expected_intent: help
+    expected_needs_location: false
+    expected_has_results: false
+    notes: "Help intent — English"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SECTION 7 — Clarify intent (ambiguous)
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: clarify-truncated
+    query: "אני רוצה ל"
+    expected_intent: clarify
+    expected_needs_location: false
+    expected_has_results: false
+    notes: "Clarify — truncated message"
+
+  - id: clarify-vague
+    query: "משהו"
+    expected_intent: clarify
+    expected_needs_location: false
+    expected_has_results: false
+    notes: "Clarify — single word too vague"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SECTION 8 — Edge cases — adversarial inputs
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: edge-sql-injection
+    query: "'; DROP TABLE products; --"
+    expected_intent: clarify
+    expected_needs_location: false
+    expected_has_results: false
+    notes: "Edge — SQL injection attempt should clarify, never crash"
+
+  - id: edge-empty-spaces
+    query: "   "
+    expected_intent: clarify
+    expected_needs_location: false
+    expected_has_results: false
+    notes: "Edge — whitespace-only message"
+
+  - id: edge-emoji-only
+    query: "🍕🍔🌮"
+    expected_intent: store_search
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "Edge — emoji-only food, infers restaurant search"
+
+  - id: edge-very-long
+    query: "אני מחפש מתנה לאמא שלי שאוהבת לבשל אבל גם אוהבת לקרוא וגם לפעמים יוצאת לטיולים ויש לי תקציב של 300 שקל"
+    expected_intent: product_search
+    expected_max_price: 300
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "Edge — long natural Hebrew with constraints; tests price extraction"
+
+  - id: edge-special-chars
+    query: "אוזניות \"סוני\" - WH-1000"
+    expected_intent: product_search
+    expected_brand: sony
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "Edge — quotes and dashes, must not break tokenization"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SECTION 9 — Dedup — F-13
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: makeup-dedup
+    query: "איפור"
+    expected_intent: product_search
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-13 — currently returns same Niveah product 4× (dedup bug)"
+
+  - id: fashion-shops-tlv
+    query: "חנויות אופנה בתל אביב"
+    expected_intent: store_search
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "F-11 — retail+city, exercises store_type=retail + bucket synonym"
+
+  - id: kids-toys-budget
+    query: "צעצועים לילדים עד 200 שקל"
+    expected_intent: product_search
+    expected_max_price: 200
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "Category + price filter, complements Yael scenario"
+
+  - id: gift-mom-200-hebrew
+    query: "מתנה לאמא עד 200 שקל"
+    expected_intent: product_search
+    expected_max_price: 200
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "Gift framing + price, common Israeli use case"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SECTION 10 — English queries
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: wireless-headphones-english
+    query: "wireless headphones for gaming"
+    expected_intent: product_search
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "English — passed in QA B3.07; should keep working"
+
+  - id: restaurants-tlv-english
+    query: "restaurants in Tel Aviv"
+    expected_intent: store_search
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "English store search with city — needs city normalization too"
+
+  - id: gift-300-english
+    query: "gift ideas around 300 shekels"
+    expected_intent: product_search
+    expected_max_price: 300
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "English — gift framing with price; broad intent"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SECTION 11 — Sally canonical scenarios — for v2 (W2+) measurement
+  # ─────────────────────────────────────────────────────────────────────
+  # These are scored against v1 with relaxed expectations (intent only).
+  # In v2 they become the primary quality signal — multi-turn coherence,
+  # clarification quality, comparison reasoning, memory surfacing.
+
+  - id: sally-sarah-ambiguous-open
+    query: "מה אפשר לקנות ב-300 שקל?"
+    expected_intent: product_search
+    expected_max_price: 300
+    expected_needs_location: false
+    expected_has_results: true
+    # v2 ideal: clarifying turn, not 12 cards
+    expected_tool_calls:
+      - tool: clarify
+        args: {context: "ambiguous-open"}
+    notes: "Sally scenario 1 — ambiguous open, v1 dumps cards, v2 should clarify"
+
+  - id: sally-yael-kid-gift
+    query: "מתנה לילד בן 3 לימי הולדת"
+    expected_intent: product_search
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "Sally scenario 2 — constraint discovery, child age extracted by inference pipeline"
+
+  - id: sally-avi-comparison
+    history:
+      - role: user
+        content: "אוזניות סוני"
+      - role: assistant
+        content: "מצאתי 3 אוזניות סוני: WH-1000XM5, WH-CH720, WF-1000XM4. תרצה השוואה?"
+    query: "מה ההבדל בין השלושה?"
+    expected_intent: product_search  # v1: best-effort; v2 should NOT call search, only compose
+    expected_needs_location: false
+    expected_has_results: true       # v1 may search again; v2 reuses tray
+    expected_tool_calls: []          # v2 ideal: no new search, just compose comparison
+    notes: "Sally scenario 3 — comparison turn, v2 should NOT search again"
+
+  - id: sally-rinat-memory-recall
+    history:
+      - role: user
+        content: "מסעדות איטלקיות בתל אביב"
+      - role: assistant
+        content: "מצאתי 12 מסעדות איטלקיות בתל אביב."
+    query: "תראה לי שוב כמו פעם שעברה"
+    expected_intent: store_search
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "Sally scenario 4 — memory surfacing, v2 should resolve 'פעם שעברה' from history"
+
+  - id: sally-mind-changer
+    history:
+      - role: user
+        content: "אופנה"
+      - role: assistant
+        content: "מה את מחפשת באופנה? בגדים, נעליים, אקססוריז?"
+      - role: user
+        content: "לא, אוכל"
+      - role: assistant
+        content: "אוקיי, אוכל. בא לך מסעדה או משלוח הביתה?"
+    query: "מתנה לאמא"
+    expected_intent: product_search
+    expected_needs_location: false
+    expected_has_results: true
+    notes: "Sally scenario 5 — repair, v2 must fold new constraint into context, not restart"
