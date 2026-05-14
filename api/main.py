@@ -23,7 +23,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from api.dependencies import get_settings, limiter
-from api.routes import admin, auth as auth_module, chat, search, stores
+from api.routes import admin, auth as auth_module, chat, chat_v2, search, stores
 from api.routes import users as users_module
 
 # ---------------------------------------------------------------------------
@@ -94,6 +94,7 @@ app.add_middleware(
 app.include_router(search.router, prefix="/api", tags=["Search"])
 app.include_router(stores.router, prefix="/api", tags=["Stores"])
 app.include_router(chat.router, prefix="/api", tags=["Chat"])
+app.include_router(chat_v2.router, prefix="/api", tags=["Chat v2 (agentic)"])
 app.include_router(admin.router, prefix="/api", tags=["Admin"])
 app.include_router(auth_module.router, prefix="/api", tags=["Auth"])
 app.include_router(users_module.router, prefix="/api", tags=["Users"])

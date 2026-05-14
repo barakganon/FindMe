@@ -269,3 +269,62 @@ class ChatResponse(BaseModel):
     )
     voucher_network: str = Field("buyme", description="Voucher network used for this response")
     search_time_ms: float = Field(0.0, ge=0.0, description="Total server-side time in ms")
+
+
+# ---------------------------------------------------------------------------
+# Agentic conversation v2 — POST /api/chat/v2
+# ---------------------------------------------------------------------------
+
+
+class ToolCallTrace(BaseModel):
+    """One tool invocation inside an agentic conversation turn."""
+
+    name: str = Field(..., description="Tool name (e.g. 'search_products')")
+    args: dict = Field(default_factory=dict, description="Arguments the LLM passed to the tool")
+    duration_ms: float = Field(0.0, ge=0.0, description="Tool execution time in milliseconds")
+    error: Optional[str] = Field(None, description="Error message if the tool execution failed")
+    result_count: Optional[int] = Field(
+        None, description="Number of result items the tool returned (when applicable)"
+    )
+
+
+class AgentTrace(BaseModel):
+    """Trace of one agentic turn — exposed via ChatResponseV2 for eval scoring."""
+
+    tool_calls: list[ToolCallTrace] = Field(
+        default_factory=list, description="Tools the agent invoked, in call order"
+    )
+    iterations: int = Field(0, ge=0, description="Number of LLM round-trips in this turn")
+    total_latency_ms: float = Field(0.0, ge=0.0, description="Wall-clock time for the full turn")
+    total_cost_usd: Optional[float] = Field(
+        None, description="Approximate USD cost of LLM calls (when computable)"
+    )
+    terminated_by: str = Field(
+        "content",
+        description="'content'|'max_iterations'|'cost_budget'|'error' — why the loop stopped",
+    )
+
+
+class ChatResponseV2(BaseModel):
+    """Response payload for POST /api/chat/v2 — superset of ChatResponse + trace."""
+
+    message: str = Field(..., description="Hebrew natural-language answer")
+    intent: str = Field(
+        ...,
+        description=(
+            "Best-effort intent label inferred from tool calls "
+            "('product_search' if search_products was called, 'help' otherwise, etc.). "
+            "Provided for backwards-compat with v1 clients and eval scoring."
+        ),
+    )
+    product_results: Optional[list[ProductResult]] = Field(
+        None, description="Accumulated product results across all tool calls this turn"
+    )
+    store_results: Optional[list[StoreResult]] = Field(
+        None, description="Accumulated store results (W3+ when store_search tool lands)"
+    )
+    needs_location: bool = Field(False, description="True when a tool reported GPS required")
+    location_prompt: Optional[str] = Field(None, description="Hebrew prompt for location")
+    voucher_network: str = Field("buyme", description="Active voucher network")
+    search_time_ms: float = Field(0.0, ge=0.0, description="Total server-side time in ms")
+    trace: AgentTrace = Field(..., description="Agent trace for eval + debugging")

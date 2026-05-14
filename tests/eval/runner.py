@@ -290,6 +290,111 @@ def score_response_v1(
     return dims
 
 
+def _args_superset(actual: dict[str, Any], expected: dict[str, Any]) -> bool:
+    """True iff every key in `expected` is in `actual` with a matching value.
+
+    Match rules:
+    - String values: case-insensitive substring match either direction
+      ("Sony" matches "sony", "Sony Corp" matches "Sony", and vice versa).
+    - Numeric values: equal within 5% tolerance.
+    - Other types: equality.
+    """
+    for k, expected_v in expected.items():
+        if k not in actual:
+            return False
+        actual_v = actual[k]
+        if isinstance(expected_v, str) and isinstance(actual_v, str):
+            if (
+                expected_v.lower() not in actual_v.lower()
+                and actual_v.lower() not in expected_v.lower()
+            ):
+                return False
+        elif isinstance(expected_v, (int, float)) and isinstance(actual_v, (int, float)):
+            if abs(actual_v - expected_v) > max(abs(expected_v) * 0.05, 1):
+                return False
+        else:
+            if actual_v != expected_v:
+                return False
+    return True
+
+
+def score_response_v2(
+    query: GoldenQuery,
+    response: dict[str, Any],
+) -> list[DimensionResult]:
+    """Score a ChatResponseV2 (with trace) against v1 dims + v2 tool-call dims.
+
+    v1 dimensions still apply (intent, has_results, etc.). v2 adds:
+    - tool_call_match: every expected tool call has a matching real call
+    - no_extra_tool_calls: agent didn't call more tools than expected (±1 tolerance)
+    - empty_tool_calls: if expected_tool_calls == [], agent called ZERO tools
+    """
+    dims = score_response_v1(query, response)
+
+    # v2 dims only apply when expected_tool_calls is explicitly set
+    if query.expected_tool_calls is None:
+        return dims
+
+    trace = response.get("trace") or {}
+    actual_calls = trace.get("tool_calls") or []
+    expected_calls = query.expected_tool_calls
+
+    # empty_tool_calls — Sally's comparison-turn scenario
+    if not expected_calls:
+        dims.append(
+            DimensionResult(
+                name="empty_tool_calls",
+                applied=True,
+                passed=len(actual_calls) == 0,
+                expected="0 tool calls",
+                got=f"{len(actual_calls)} tool calls",
+                detail=", ".join(c.get("name", "?") for c in actual_calls) if actual_calls else "",
+            )
+        )
+        return dims
+
+    # tool_call_match — each expected call has a matching actual call
+    matched = 0
+    for expected in expected_calls:
+        exp_name = expected.get("tool") or expected.get("name")
+        exp_args = expected.get("args", {})
+        found = any(
+            actual.get("name") == exp_name
+            and _args_superset(actual.get("args", {}), exp_args)
+            for actual in actual_calls
+        )
+        if found:
+            matched += 1
+
+    dims.append(
+        DimensionResult(
+            name="tool_call_match",
+            applied=True,
+            passed=matched == len(expected_calls),
+            expected=f"{len(expected_calls)} matching tool call(s)",
+            got=f"{matched} matched",
+            detail=", ".join(
+                f"{c.get('name')}({list(c.get('args', {}).keys())})"
+                for c in actual_calls
+            ),
+        )
+    )
+
+    # no_extra_tool_calls — ±1 tolerance (LLM may add a clarify-style call)
+    diff = len(actual_calls) - len(expected_calls)
+    dims.append(
+        DimensionResult(
+            name="no_extra_tool_calls",
+            applied=True,
+            passed=diff <= 1,
+            expected=f"<= {len(expected_calls) + 1} tool calls",
+            got=f"{len(actual_calls)} tool calls",
+        )
+    )
+
+    return dims
+
+
 # ---------------------------------------------------------------------------
 # HTTP client
 # ---------------------------------------------------------------------------
@@ -350,7 +455,11 @@ async def run_all(
                         error=error,
                         latency_ms=latency_ms,
                     )
-                dims = score_response_v1(q, response or {})
+                # v2 scoring when the response carries a trace (i.e. /api/chat/v2)
+                if (response or {}).get("trace") is not None:
+                    dims = score_response_v2(q, response or {})
+                else:
+                    dims = score_response_v1(q, response or {})
                 return QueryResult(
                     query=q,
                     dimensions=dims,
