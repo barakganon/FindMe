@@ -1,6 +1,6 @@
 # Story 5.2: Agent Loop Thin Slice + W2 Kill-Gate
 
-Status: review
+Status: done
 
 > **Source:** [findme-v2-sprint-plan.md](../planning-artifacts/findme-v2-sprint-plan.md) — Week 2 of the agentic conversation refactor.
 > The W1 eval harness (Story 5.1) provided the measurement spine. W2 builds the smallest agentic chat possible — one tool, one route, console output, no streaming — and uses the harness to **measure whether Gemini-2.5-flash can actually emit Hebrew tool calls correctly**. If it can't (≥80% bar), we swap to Claude Sonnet 4.7 in 1 day, before going any deeper.
@@ -103,6 +103,49 @@ so that **the W1 eval harness can measure tool-call accuracy on Hebrew queries a
 - [x] **Task 7 (AC-7): Regression check**
   - [x] `.venv/bin/python -m pytest tests/ -q --ignore=tests/eval` reports **35 passed** (29 baseline + 6 new agent-loop tests)
   - [x] `POST /api/chat` (v1) still works — the v1 baseline run from W1 was not invalidated
+
+### Review Findings (2026-05-15 — 3 reviewers: Blind Hunter, Edge Case Hunter, Acceptance Auditor)
+
+**Decisions resolved (2026-05-16):**
+
+- [x] [Review][Defer] Tool description Hebrew→English translate hint — keep both behaviors, A/B test in W6 prompt iteration [api/agent/tools/search_products.py: SEARCH_PRODUCTS_SPEC description] — deferred to W6
+- [x] [Review][Dismiss] Per-route rate limit on /api/chat/v2 — global 200/min is acceptable for W2 internal testing; cost_budget_usd (HIGH patch above) will provide per-session protection once implemented
+
+**Patches HIGH (must fix before W3 starts):**
+
+- [x] [Review][Patch] (HIGH) **AC-1 violation: `cost_budget_usd` parameter is missing from `run_agent` signature.** Spec, docstring, and AgentTrace schema all reference cost_budget enforcement and `terminated_by="cost_budget"`; zero code paths implement it. "Cost cap is non-negotiable" per CLAUDE.md [api/agent/loop.py:run_agent signature & loop body] — source: blind+edge+auditor (triple-confirmed)
+- [x] [Review][Patch] (HIGH) **AC-4 violation: route does NOT depend on `get_optional_user`.** Anonymous works trivially because no auth is checked, but logged-in users get no personalization/inference context. Spec AC-4 line literally says "Uses `get_optional_user`" [api/routes/chat_v2.py: chat_v2 handler signature] — source: auditor
+- [x] [Review][Patch] (HIGH) **AC-6 issue: W2 kill-gate "96.8% Hebrew tool-call accuracy" is author-narrated, not harness-measured.** The rubric's `tool_call_match` dim scored 0/1 because only 1 query (Sally Sarah) had `expected_tool_calls` set. Backfill `expected_tool_calls` on the ~30 product/store Hebrew queries, OR add a separate `tool_was_called` dim with relaxed matching [tests/eval/baselines/2026-05-15-v2-w2-killgate.md + tests/eval/golden_queries.yaml] — source: auditor
+- [x] [Review][Patch] (HIGH) Agent errors return HTTP 200 with `intent="help"` and a Hebrew error string indistinguishable from a real help reply — clients can't detect failure. Set distinct `intent="error"` or HTTPException(503) when `terminated_by="error"` [api/agent/loop.py: error handling + api/routes/chat_v2.py:_infer_intent] — source: blind
+- [x] [Review][Patch] (HIGH) Tool result sends only summary string back to LLM as `role=tool` content — the structured product data (names, prices, IDs) is dropped before the LLM composes its final reply. Result: model can't reference items by name or price; reply quality silently capped [api/agent/loop.py: tool dispatch result handling] — source: blind
+- [x] [Review][Patch] (HIGH) Empty `assistant_msg.content` + empty `tool_calls` produces silent blank reply (`result.message = ""`, `terminated_by="content"`) — Gemini does this on safety-filtered or 0-token completions. User sees a totally blank bubble [api/agent/loop.py: post-LLM-call branch] — source: edge
+- [x] [Review][Patch] (HIGH) Tool executor calls have no timeout — `await executor(...)` can hang the entire FastAPI worker for >5 min if `_run_product_search` stalls (Gemini embedding rate-limit). Only the LLM call has `request_timeout_s` [api/agent/loop.py: tool execution loop] — source: edge
+- [x] [Review][Patch] (HIGH) `_args_superset` uses BIDIRECTIONAL substring (`expected in actual OR actual in expected`) — too permissive. `brand="S"` matches `brand="Sony"`. Inflates `tool_call_match` scores. Make match unidirectional (actual must contain expected) [tests/eval/runner.py: _args_superset] — source: blind+edge+auditor
+
+**Patches MED:**
+
+- [x] [Review][Patch] (MED) `completion.choices[0]` raises IndexError when Gemini returns `choices=[]` (safety filter blocked) — caught by bare except, indistinguishable from network failure. Guard explicitly and surface `terminated_by="safety_blocked"` [api/agent/loop.py: post-LLM unpacking] — source: edge
+- [x] [Review][Patch] (MED) `tc.function.name` / `.arguments` access has no None-guard — malformed tool_call (rare on streaming aborts) crashes the entire iteration, not just that tool. Wrap in try/except per-call [api/agent/loop.py: tool_call iteration] — source: edge
+- [x] [Review][Patch] (MED) When Gemini returns BOTH content AND tool_calls (reasoning preamble + tool call), the `content` is dropped — only tool execution path is taken. Append assistant.content to trace or future "intermediate_messages" field [api/agent/loop.py: post-LLM branch] — source: edge
+- [x] [Review][Patch] (MED) `result.product_results.extend(items)` runs for every search_products call — no dedup, no cap. 5-iteration loop can return 50+ duplicate products. Use last-call assignment or dedup by product_id + cap [api/agent/loop.py: tool dispatch] — source: blind
+- [x] [Review][Patch] (MED) `online_only=True` filters AFTER `_run_product_search` returns top-N — yields near-empty replies because filter happens after candidate selection. Either pass online_only into `_run_product_search` or fetch more candidates before filtering [api/agent/tools/search_products.py: execute_search_products] — source: edge
+- [x] [Review][Patch] (MED) Assistant.tool_calls message appended BEFORE executor try/except — if executor raises uncaught (e.g. CancelledError), conversation has orphan tool_calls without matching role=tool replies → next iteration's API call gets rejected with 400 [api/agent/loop.py: message append order] — source: edge
+- [x] [Review][Patch] (MED) `max_iterations` hit but `result.product_results` already has accumulated items from successful prior calls — UX shows fallback "החיפוש לא הסתיים בזמן" message AND a stack of result cards with no narrative tying them [api/agent/loop.py: for/else fallthrough] — source: edge
+- [x] [Review][Patch] (MED) `json.loads(raw_args)` failure caught as generic Exception — `parsed_args` stays `{}`, original bad payload lost. Trace shows empty args even though LLM emitted something. Set `parsed_args = {"_raw": raw_args}` on parse failure for debugging [api/agent/loop.py: per-tool try/except] — source: blind
+- [x] [Review][Patch] (MED) `_args_superset` numeric tolerance has `max(abs(expected_v) * 0.05, 1)` floor — `expected_max_price=0` matches anything in [-1, 1]; for small values the absolute floor swamps relative tolerance [tests/eval/runner.py: _args_superset] — source: blind
+
+**Patches LOW:**
+
+- [x] [Review][Patch] (LOW) `_infer_intent` heuristic `len(message.strip()) < 4` is multi-byte unsafe in Hebrew — short queries like `יין?` (4 chars) pass; `H&M` (3 chars) gets mis-routed to clarify. Inspect content more substantively [api/routes/chat_v2.py: _infer_intent] — source: blind+edge
+- [x] [Review][Patch] (LOW) `session_context` with `user_lat=32.08, user_lng=null` (or vice versa) silently drops location with no warning — client bugs become invisible [api/routes/chat_v2.py: location guard] — source: edge
+- [x] [Review][Patch] (LOW) `from api.schemas import LocationFilter` is inside the conditional in chat_v2.py — move to top of file. Pattern is a smell that turns into a "TODO" [api/routes/chat_v2.py: chat_v2 imports] — source: blind
+
+**Deferred (W3+/architectural — explicitly out of W2 scope):**
+
+- [x] [Review][Defer] (MED) `ChatMessage.role` allows `"tool"` but schema lacks `tool_call_id` — replaying history with tool messages will produce LLM API 400s. Bites W3 when Redis session memory lands [api/agent/loop.py: history coercion + api/schemas.py: ChatMessage] — deferred to W3 memory work
+- [x] [Review][Defer] (MED) `_run_product_search` is imported inside `execute_search_products` as a circular-dependency band-aid. The comment acknowledges the issue. Move to shared module when W4 audit fixes refactor search code [api/agent/tools/search_products.py: execute_search_products] — deferred to W4 audit refactor
+- [x] [Review][Defer] (LOW) `result.store_results` is never populated; hardcoded `if tool_name == "search_products"` ignores future tools. The comment notes this. Generalize when search_stores tool lands [api/agent/loop.py: tool result extend] — deferred to W3 search_stores tool
+- [x] [Review][Defer] (LOW) `needs_location` hardcoded to False in chat_v2 — no equivalent of v1's GPS prompt yet. Documented in the W2 baseline interpretation [api/routes/chat_v2.py: ChatResponseV2 construction] — deferred to W3 clarify/needs_location tool
 
 ## Dev Notes
 

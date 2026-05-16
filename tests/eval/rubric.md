@@ -103,7 +103,7 @@ Failure to clear this bar triggers a 1-day swap to Claude Sonnet 4.7 (per [findm
 
 ### Trace contract for v2 endpoint
 
-For the runner to score tool calls, the `POST /api/chat/v2` response must include a `trace` field:
+For the runner to score tool calls, the `POST /api/chat/v2` response must include a `trace` field matching `AgentTrace` in `api/schemas.py`. **The tool-call entries use the `name` field for the tool name** (the runner also accepts `tool` as an alias for backward compatibility with older golden queries):
 
 ```json
 {
@@ -113,17 +113,19 @@ For the runner to score tool calls, the `POST /api/chat/v2` response must includ
   "store_results": [...],
   "trace": {
     "tool_calls": [
-      {"tool": "search_products", "args": {"brand": "Sony", "max_price": 300}, "duration_ms": 432},
-      {"tool": "compose_response", "args": {...}, "duration_ms": 89}
+      {"name": "search_products", "args": {"brand": "Sony", "max_price": 300}, "duration_ms": 432, "result_count": 10, "error": null}
     ],
     "iterations": 2,
+    "total_latency_ms": 1450,
     "total_cost_usd": 0.0012,
-    "total_latency_ms": 1450
+    "terminated_by": "content"
   }
 }
 ```
 
-If the v2 endpoint cannot include the trace inline (e.g. SSE streaming), it MUST expose `GET /api/chat/v2/trace/{request_id}` for the runner to fetch post-hoc.
+In `golden_queries.yaml`, `expected_tool_calls` entries may use either `tool:` or `name:` for the tool name — the runner's `score_response_v2` accepts both keys to make YAML authoring readable while keeping the schema-canonical `name` in the actual response.
+
+If the v2 endpoint cannot include the trace inline (e.g. SSE streaming in W5), it MUST expose `GET /api/chat/v2/trace/{request_id}` for the runner to fetch post-hoc.
 
 ---
 

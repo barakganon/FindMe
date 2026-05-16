@@ -116,6 +116,7 @@ async def execute_search_products(
     db: AsyncSession,
     api_key: str,
     location: Optional[LocationFilter] = None,
+    **_unused: object,  # forward-compat: tool_context may carry extra kwargs (e.g. current_user)
 ) -> tuple[list[ProductResult], str]:
     """
     Execute the search_products tool.
@@ -155,8 +156,12 @@ async def execute_search_products(
         api_key=api_key,
     )
 
-    # Apply limit + online_only filter (the production path doesn't honor either,
-    # so we trim here).
+    # Apply online_only BEFORE slicing to `limit`. Caveat: _run_product_search
+    # already caps internally at _CHAT_PAGE_SIZE, so when online_only=True and
+    # most of the top-N candidates are physical stores, this can return fewer
+    # than `params.limit`. Structural fix (push online_only into the search SQL
+    # so the cap applies post-filter) is part of the W4 audit refactor — see
+    # deferred-work.md entry on _run_product_search circular dependency.
     if params.online_only:
         results = [r for r in results if r.store.is_online]
     results = results[: params.limit]

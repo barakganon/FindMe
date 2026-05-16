@@ -240,3 +240,289 @@ async def test_invalid_tool_args_surfaces_validation_error():
     assert result.tool_calls[0].error is not None
     assert "invalid arguments" in result.tool_calls[0].error
     assert result.terminated_by == "content"
+
+
+# ---------------------------------------------------------------------------
+# Tests for review-finding patches (2026-05-16)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_empty_content_and_no_tool_calls_yields_fallback():
+    """Both content=None and tool_calls=None must not produce a silent blank reply."""
+    llm = _mock_llm([_mock_completion(content=None, tool_calls=None)])
+    result = await run_agent(
+        message="היי",
+        history=[],
+        llm_client=llm,
+        tools=[],
+        tool_registry={},
+        tool_context={},
+    )
+    assert result.message  # non-empty fallback
+    assert result.terminated_by == "empty_response"
+
+
+@pytest.mark.anyio
+async def test_completion_with_no_choices_is_safety_blocked():
+    """Empty choices list (Gemini safety filter) terminates with safety_blocked, not generic error."""
+    # Build a real-shape namespace (not MagicMock) so the cost estimator can
+    # introspect usage cleanly instead of getting auto-magic attrs.
+    empty = SimpleNamespace(
+        choices=[],
+        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=0),
+    )
+    llm = _mock_llm([empty])
+    result = await run_agent(
+        message="anything",
+        history=[],
+        llm_client=llm,
+        tools=[],
+        tool_registry={},
+        tool_context={},
+    )
+    assert result.terminated_by == "safety_blocked"
+    assert result.message  # has a user-facing fallback
+
+
+@pytest.mark.anyio
+async def test_malformed_tool_call_is_dropped():
+    """A tool_call whose .function is None must not crash the iteration —
+    the loop drops it and (if no others remain) terminates with error."""
+    bad_tc = SimpleNamespace(id="x", function=None)
+    llm = _mock_llm([_mock_completion(tool_calls=[bad_tc])])
+    result = await run_agent(
+        message="x",
+        history=[],
+        llm_client=llm,
+        tools=[{"type": "function", "function": {"name": "fake_tool"}}],
+        tool_registry={"fake_tool": (_FakeParams, _fake_tool_ok)},
+        tool_context={},
+    )
+    assert result.terminated_by == "error"
+    # The malformed call should NOT appear in the trace (it was dropped pre-dispatch)
+    assert len(result.tool_calls) == 0
+
+
+@pytest.mark.anyio
+async def test_tool_timeout_surfaces_to_trace_and_continues():
+    """A tool that exceeds tool_timeout_s must be reported in the trace and not hang the worker."""
+    import asyncio as _asyncio
+
+    async def _slow_tool(params: _FakeParams, **kwargs):
+        await _asyncio.sleep(5.0)  # longer than the timeout we'll set
+        return ([], "never reached")
+
+    llm = _mock_llm(
+        [
+            _mock_completion(tool_calls=[_mock_tool_call("c1", "slow_tool", {})]),
+            _mock_completion(content="הכלי לא הספיק. נסה שוב."),
+        ]
+    )
+    result = await run_agent(
+        message="anything",
+        history=[],
+        llm_client=llm,
+        tools=[{"type": "function", "function": {"name": "slow_tool"}}],
+        tool_registry={"slow_tool": (_FakeParams, _slow_tool)},
+        tool_context={},
+        tool_timeout_s=0.5,
+    )
+    assert len(result.tool_calls) == 1
+    assert "timed out" in (result.tool_calls[0].error or "")
+    assert result.terminated_by == "content"
+
+
+@pytest.mark.anyio
+async def test_cost_budget_exceeded_terminates():
+    """When cumulative cost exceeds cost_budget_usd, the loop must terminate."""
+
+    # Each completion has a usage object reporting very high token counts so the
+    # estimator pushes us over budget after the first call.
+    def _expensive_completion():
+        msg = SimpleNamespace(content="...", tool_calls=None)
+        choice = SimpleNamespace(message=msg)
+        usage = SimpleNamespace(prompt_tokens=10_000_000, completion_tokens=10_000_000)
+        return SimpleNamespace(choices=[choice], usage=usage)
+
+    llm = _mock_llm([_expensive_completion()])
+    result = await run_agent(
+        message="x",
+        history=[],
+        llm_client=llm,
+        tools=[],
+        tool_registry={},
+        tool_context={},
+        cost_budget_usd=0.01,
+    )
+    assert result.terminated_by == "cost_budget"
+    assert result.total_cost_usd > 0.01
+
+
+@pytest.mark.anyio
+async def test_invalid_max_iterations_rejected():
+    """max_iterations < 1 must raise rather than silently no-op."""
+    llm = _mock_llm([_mock_completion(content="x")])
+    with pytest.raises(ValueError, match="max_iterations"):
+        await run_agent(
+            message="x",
+            history=[],
+            llm_client=llm,
+            tools=[],
+            tool_registry={},
+            tool_context={},
+            max_iterations=0,
+        )
+
+
+@pytest.mark.anyio
+async def test_tool_result_includes_structured_items_for_llm():
+    """The role=tool content must include structured item data (JSON), not
+    just a Hebrew summary string. The LLM needs prices/names to compose replies."""
+    from api.schemas import ProductResult, StoreInfo
+    import json as _json
+
+    async def _tool_with_real_results(params: _FakeParams, **kwargs):
+        store = StoreInfo(
+            id="s1", name_he="חנות", name_en=None, buyme_url="https://buyme.co.il/s1",
+            is_online=True, city="תל אביב", lat=None, lng=None, distance_km=None,
+        )
+        item = ProductResult(
+            product_id="p1", canonical_name="Sony XM5", brand="Sony", category_path=None,
+            store=store, price=1299.0, currency="ILS", availability=True,
+            product_url="https://x", match_score=0.9,
+        )
+        return ([item], "מצאתי 1: Sony XM5")
+
+    llm = _mock_llm(
+        [
+            _mock_completion(tool_calls=[_mock_tool_call("c1", "real_tool", {"brand": "Sony"})]),
+            _mock_completion(content="הנה המוצר."),
+        ]
+    )
+    result = await run_agent(
+        message="x",
+        history=[],
+        llm_client=llm,
+        tools=[{"type": "function", "function": {"name": "real_tool"}}],
+        tool_registry={"real_tool": (_FakeParams, _tool_with_real_results)},
+        tool_context={},
+    )
+    # The tool dispatch must have been called twice (first LLM with tools, second to compose).
+    # Inspect the second LLM call's messages — the tool message should have JSON-encoded items.
+    create_call = llm.chat.completions.create.await_args_list[1]
+    msgs = create_call.kwargs["messages"]
+    tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    payload = _json.loads(tool_msgs[0]["content"])
+    assert "items" in payload
+    assert payload["items"][0]["name"] == "Sony XM5"
+    assert payload["items"][0]["price"] == 1299.0
+
+
+@pytest.mark.anyio
+async def test_dedup_accumulates_unique_products():
+    """When the LLM calls search_products multiple times, accumulator dedups by product_id."""
+    from api.schemas import ProductResult, StoreInfo
+    from api.agent.loop import _accumulate_results
+
+    store = StoreInfo(
+        id="s1", name_he="חנות", name_en=None, buyme_url=None,
+        is_online=True, city=None, lat=None, lng=None, distance_km=None,
+    )
+
+    def _mk_item(pid: str) -> ProductResult:
+        return ProductResult(
+            product_id=pid, canonical_name=f"Item {pid}", brand=None, category_path=None,
+            store=store, price=10.0, currency="ILS", availability=True,
+            product_url=None, match_score=0.5,
+        )
+
+    accum: list = []
+    _accumulate_results(accum, [_mk_item("p1"), _mk_item("p2"), _mk_item("p3")])
+    _accumulate_results(accum, [_mk_item("p2"), _mk_item("p4")])  # p2 is dup
+    assert [it.product_id for it in accum] == ["p1", "p2", "p3", "p4"]
+
+
+@pytest.mark.anyio
+async def test_history_tool_role_messages_are_dropped():
+    """History entries with role=tool must be dropped from the LLM conversation
+    (they lack tool_call_id and would 400 the provider)."""
+    from api.schemas import ChatMessage
+
+    history = [
+        ChatMessage(role="user", content="א"),
+        ChatMessage(role="tool", content="this should be dropped"),
+        ChatMessage(role="assistant", content="ב"),
+    ]
+    llm = _mock_llm([_mock_completion(content="ok")])
+    await run_agent(
+        message="ג",
+        history=history,
+        llm_client=llm,
+        tools=[],
+        tool_registry={},
+        tool_context={},
+    )
+    create_call = llm.chat.completions.create.await_args
+    msgs = create_call.kwargs["messages"]
+    # system + 2 valid history turns + 1 new user msg = 4 (tool message dropped)
+    assert len(msgs) == 4
+    assert all(m["role"] != "tool" for m in msgs)
+    # The "dropped" content is also gone
+    assert all("dropped" not in (m.get("content", "") or "") for m in msgs)
+
+
+@pytest.mark.anyio
+async def test_json_parse_failure_preserves_raw_args_in_trace():
+    """When tool_call arguments are malformed JSON, the trace must preserve
+    the raw payload so debugging is possible."""
+    bad_tc = SimpleNamespace(
+        id="c1",
+        function=SimpleNamespace(name="fake_tool", arguments='{"brand": MALFORMED'),
+    )
+    llm = _mock_llm(
+        [
+            _mock_completion(tool_calls=[bad_tc]),
+            _mock_completion(content="לא הצלחתי לקרוא לכלי."),
+        ]
+    )
+    result = await run_agent(
+        message="x",
+        history=[],
+        llm_client=llm,
+        tools=[{"type": "function", "function": {"name": "fake_tool"}}],
+        tool_registry={"fake_tool": (_FakeParams, _fake_tool_ok)},
+        tool_context={},
+    )
+    assert len(result.tool_calls) == 1
+    tc_trace = result.tool_calls[0]
+    assert tc_trace.error is not None
+    # Raw payload preserved for debugging
+    assert "_raw_args" in tc_trace.args
+    assert "MALFORMED" in tc_trace.args["_raw_args"]
+
+
+@pytest.mark.anyio
+async def test_intermediate_content_captured_when_alongside_tool_calls():
+    """When the LLM emits BOTH content (reasoning) AND tool_calls, the content
+    must be captured in result.intermediate_content rather than dropped."""
+    llm = _mock_llm(
+        [
+            _mock_completion(
+                content="חושב על זה...",
+                tool_calls=[_mock_tool_call("c1", "fake_tool", {"query": "x"})],
+            ),
+            _mock_completion(content="הנה התוצאה."),
+        ]
+    )
+    result = await run_agent(
+        message="x",
+        history=[],
+        llm_client=llm,
+        tools=[{"type": "function", "function": {"name": "fake_tool"}}],
+        tool_registry={"fake_tool": (_FakeParams, _fake_tool_ok)},
+        tool_context={},
+    )
+    assert result.message == "הנה התוצאה."
+    assert "חושב על זה..." in result.intermediate_content

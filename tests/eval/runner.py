@@ -95,14 +95,47 @@ class QueryResult:
 # ---------------------------------------------------------------------------
 
 
+_REQUIRED_QUERY_FIELDS = ("id", "query", "expected_intent")
+
+
 def load_queries(path: Path) -> list[GoldenQuery]:
-    """Parse golden_queries.yaml into typed GoldenQuery objects."""
+    """Parse golden_queries.yaml into typed GoldenQuery objects.
+
+    Raises a clear error if the YAML is malformed, the `queries` key is
+    missing/empty, a query is missing a required field, or IDs are duplicated.
+    """
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not raw or not isinstance(raw, dict):
+        raise ValueError(f"{path}: top-level is not a mapping (empty or malformed YAML)")
+    items = raw.get("queries")
+    if items is None:
+        raise ValueError(f"{path}: missing top-level 'queries:' key")
+    if not isinstance(items, list):
+        raise ValueError(f"{path}: 'queries' must be a list, got {type(items).__name__}")
+    if not items:
+        raise ValueError(f"{path}: 'queries' list is empty")
+
     queries: list[GoldenQuery] = []
-    for item in raw["queries"]:
+    seen_ids: dict[str, int] = {}
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValueError(f"{path}: query #{idx} is not a mapping")
+        for required in _REQUIRED_QUERY_FIELDS:
+            if required not in item:
+                raise ValueError(
+                    f"{path}: query #{idx} (id={item.get('id', '<unknown>')!r}) "
+                    f"missing required field {required!r}"
+                )
+        qid = item["id"]
+        if qid in seen_ids:
+            raise ValueError(
+                f"{path}: duplicate query id {qid!r} (first seen at index {seen_ids[qid]}, "
+                f"again at index {idx})"
+            )
+        seen_ids[qid] = idx
         queries.append(
             GoldenQuery(
-                id=item["id"],
+                id=qid,
                 query=item["query"],
                 expected_intent=item["expected_intent"],
                 expected_needs_location=item.get("expected_needs_location", False),
@@ -293,24 +326,38 @@ def score_response_v1(
 def _args_superset(actual: dict[str, Any], expected: dict[str, Any]) -> bool:
     """True iff every key in `expected` is in `actual` with a matching value.
 
-    Match rules:
-    - String values: case-insensitive substring match either direction
-      ("Sony" matches "sony", "Sony Corp" matches "Sony", and vice versa).
-    - Numeric values: equal within 5% tolerance.
+    Match rules (unidirectional — actual must satisfy expected):
+    - String values: case-insensitive containment. The expected substring must
+      appear in the actual value. Single-letter or empty expected strings are
+      treated as wildcards (always match) to prevent accidental over-matching.
+    - Numeric values: relative tolerance of 5% (i.e. actual within ±5% of expected).
+      No absolute floor — that previously matched anything near zero.
+    - Booleans match exactly (NOT via numeric coercion).
     - Other types: equality.
+
+    Bidirectional matching was rejected: under it, `expected={'brand': 'S'}`
+    matched any brand containing 's', inflating tool_call_match scores.
     """
     for k, expected_v in expected.items():
         if k not in actual:
             return False
         actual_v = actual[k]
-        if isinstance(expected_v, str) and isinstance(actual_v, str):
-            if (
-                expected_v.lower() not in actual_v.lower()
-                and actual_v.lower() not in expected_v.lower()
-            ):
+        # Bool must be checked BEFORE int (bool is a subclass of int in Python)
+        if isinstance(expected_v, bool) or isinstance(actual_v, bool):
+            if actual_v != expected_v:
+                return False
+        elif isinstance(expected_v, str) and isinstance(actual_v, str):
+            exp_lower = expected_v.lower()
+            # Tiny expected strings are not specific enough to be useful as a
+            # discriminator — treat as wildcard so authors can pass `""` or
+            # single letters as "any value" without false positives.
+            if len(exp_lower) <= 1:
+                continue
+            if exp_lower not in actual_v.lower():
                 return False
         elif isinstance(expected_v, (int, float)) and isinstance(actual_v, (int, float)):
-            if abs(actual_v - expected_v) > max(abs(expected_v) * 0.05, 1):
+            tolerance = abs(expected_v) * 0.05
+            if abs(actual_v - expected_v) > tolerance:
                 return False
         else:
             if actual_v != expected_v:
@@ -443,7 +490,11 @@ async def run_all(
     results: list[QueryResult] = []
     sem = asyncio.Semaphore(concurrency)
 
-    async with httpx.AsyncClient() as client:
+    # Explicit connect/read/pool timeouts so a network-layer hang
+    # (DNS, TCP connect) doesn't escape the per-call 60s timeout.
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
+    ) as client:
 
         async def run_one(q: GoldenQuery) -> QueryResult:
             async with sem:
@@ -471,8 +522,15 @@ async def run_all(
         for fut in asyncio.as_completed(tasks):
             qr = await fut
             results.append(qr)
-            # progress dot
-            sys.stderr.write("✓" if qr.overall_pass else "✗")
+            # progress mark: "!" for infrastructure errors so operators can
+            # tell them apart from legitimate eval failures (which are "✗").
+            if qr.error:
+                mark = "!"
+            elif qr.overall_pass:
+                mark = "✓"
+            else:
+                mark = "✗"
+            sys.stderr.write(mark)
             sys.stderr.flush()
         sys.stderr.write("\n")
 
@@ -672,12 +730,16 @@ def main() -> int:
         run_all(queries, args.base_url, args.endpoint, args.concurrency)
     )
 
+    # Whitelist args echoed into the report's "Command" line. Prevents future
+    # auth/secret flags from leaking into committed baseline files.
+    _ECHO_ARGS = {"base_url", "endpoint", "queries_file", "limit", "concurrency", "output", "json"}
     command = "python -m tests.eval.runner " + " ".join(
         f"--{k.replace('_', '-')}={v}"
         for k, v in vars(args).items()
-        if v not in (None, False)
+        if k in _ECHO_ARGS and v not in (None, False)
     )
 
+    # --json + --output are now compatible: write JSON to file when both given.
     if args.json:
         payload = {
             "total": len(results),
@@ -706,7 +768,14 @@ def main() -> int:
                 for r in results
             ],
         }
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        json_text = json.dumps(payload, ensure_ascii=False, indent=2)
+        if args.output:
+            out_path = Path(args.output)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json_text, encoding="utf-8")
+            print(f"→ JSON written to {out_path}", file=sys.stderr)
+        else:
+            print(json_text)
     else:
         report = render_report(results, args.base_url, args.endpoint, command)
         if args.output:
