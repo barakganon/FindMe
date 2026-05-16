@@ -17,11 +17,17 @@ import logging
 import time
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from openai import AsyncOpenAI
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.agent.cost_guard import (
+    is_over_budget,
+    register_cost,
+    seconds_until_midnight_utc,
+)
+from api.agent.invite_allowlist import block_reason, is_allowed
 from api.agent.loop import run_agent
 from api.agent.session_memory import (
     derive_session_id,
@@ -84,6 +90,24 @@ async def chat_v2(
     x_session_id: Annotated[Optional[str], Header(alias="X-Session-ID")] = None,
 ) -> ChatResponseV2:
     """Run one turn of the agentic conversation loop and return the result."""
+    # W5 gates: invite allowlist + daily cost budget. Both no-op by default
+    # (env vars off) and only activate when explicitly turned on for the
+    # soft-launch window.
+    if not is_allowed(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=block_reason(current_user),
+        )
+    if await is_over_budget(redis):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "v2 daily cost budget exhausted",
+                "fallback": "/api/chat",
+            },
+            headers={"Retry-After": str(seconds_until_midnight_utc())},
+        )
+
     settings = get_settings()
     started = time.monotonic()
 
@@ -163,6 +187,9 @@ async def chat_v2(
         trace=trace,
         voucher_network=body.voucher_network,
     )
+
+    # Register this turn's cost in the daily counter. Best-effort.
+    await register_cost(redis, result.total_cost_usd)
 
     return ChatResponseV2(
         message=result.message,
