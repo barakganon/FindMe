@@ -102,7 +102,7 @@ development_status:
   5-2-agent-loop-thin-slice: done                # W2 — reviewed+patched 2026-05-16, kill-gate harness-measured 21/21=100% tool_call_match
   5-3-tools-and-memory: done                     # W3 — done 2026-05-16, gate PASSED tool_call_match 32/35=91.4%
   5-4-audit-fixes-and-telemetry: done            # W4 — done 2026-05-16, F-11 100%, F-09 67%, telemetry live
-  5-5-streaming-and-soft-launch: backlog         # W5 — SSE + invite-only 5-friend deploy
+  5-5-streaming-and-soft-launch: done            # W5 backend — SSE + cost guard + allowlist done 2026-05-16. Frontend rebuild + Render deploy deferred to follow-up.
   5-6-prompt-iteration: backlog                  # W6 — push eval to 90%+
   5-7-ui-polish-and-repair: backlog              # W7 — results tray, memory chips, repair
   5-8-test-rewrite: backlog                      # W8 — 40+ tests around tools
