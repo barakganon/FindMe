@@ -745,3 +745,44 @@ class UserFavoriteStore(Base):
 
     def __repr__(self) -> str:
         return f"<UserFavoriteStore user={self.user_id} store={self.store_id}>"
+
+
+# ---------------------------------------------------------------------------
+# AgentTrace  (per-turn telemetry for the v2 agentic chat endpoint)
+# ---------------------------------------------------------------------------
+
+class AgentTrace(Base):
+    """
+    One row per `POST /api/chat/v2` invocation. Records the tool-call trace
+    and execution stats so we can run analytics on real usage post-launch.
+
+    Inserted best-effort from chat_v2.py — if the insert fails, the chat
+    response still returns successfully.
+    """
+
+    __tablename__ = "agent_traces"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    session_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True, index=True)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    intent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tool_calls: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    iterations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_latency_ms: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    total_cost_usd: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 6), nullable=True)
+    terminated_by: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    voucher_network: Mapped[str] = mapped_column(Text, nullable=False, default="buyme", server_default="buyme")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<AgentTrace id={self.id} intent={self.intent} iterations={self.iterations}>"
