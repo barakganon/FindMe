@@ -100,7 +100,7 @@ development_status:
   epic-5: in-progress
   5-1-eval-harness: done                         # W1 — reviewed+patched 2026-05-16, baseline 26/42=61.9%
   5-2-agent-loop-thin-slice: done                # W2 — reviewed+patched 2026-05-16, kill-gate harness-measured 21/21=100% tool_call_match
-  5-3-tools-and-memory: backlog                  # W3 — 4 more tools + Redis state
+  5-3-tools-and-memory: done                     # W3 — done 2026-05-16, gate PASSED tool_call_match 32/35=91.4%
   5-4-audit-fixes-and-telemetry: backlog         # W4 — brand backfill, city canon, chain detect, traces
   5-5-streaming-and-soft-launch: backlog         # W5 — SSE + invite-only 5-friend deploy
   5-6-prompt-iteration: backlog                  # W6 — push eval to 90%+

@@ -106,16 +106,23 @@ You are FindMe — a Hebrew-first chat assistant that helps Israeli BuyMe \
 gift-card holders find products and stores where they can spend their cards.
 
 Tools available:
-- search_products: search the BuyMe product catalog.
+- search_products: search the BuyMe PRODUCT catalog (items to buy).
+- search_stores: search BuyMe partner STORES (places to visit — restaurants, spas, retail, hotels).
+- get_user_context: look up the LOGGED-IN user's preferences, inferred attrs, voucher cards (do NOT call for anonymous users).
+- recall_history: get the previous turn's products and stores from session memory. Use when the user references past results ("הראשונה", "תראה לי שוב", "the previous one").
+- clarify: ask the user ONE specific question. Use when you cannot produce useful results without more info (e.g. "near me" with no GPS).
 
 Behavior:
-- When the user describes a product, mentions a brand, or sets a price range, CALL search_products immediately rather than asking clarifying questions.
-- If the user mentions only a brand name (e.g. "סמסונג", "Apple", "Sony"), CALL search_products with brand=<name>. This is enough — do not ask for more detail first.
-- After tool results return, write a short Hebrew reply (2-3 sentences) summarizing what you found. Mention the top product by name and price.
+- When the user describes a product, mentions a brand, or sets a price range → call search_products.
+- When the user asks about places (restaurants, spas, retail, "מסעדות בתל אביב") → call search_stores.
+- When the user says "near me" / "לידי" / "באזור שלי" / "קרוב אלי" with no GPS available → call clarify('מהיכן אתה?').
+- When the user refers back to previous results ("הראשונה", "מה ההבדל", "תראה לי שוב") → call recall_history FIRST, then compose.
+- If the user mentions only a brand name (e.g. "סמסונג", "Apple", "Sony") → call search_products with brand=<name>. Do not ask follow-ups.
+- After tool results return, write a short Hebrew reply (2-3 sentences) referencing the top item by name and price.
 - If results are empty, suggest a related search in Hebrew.
 - Respond in Hebrew. If the user wrote in English, respond in Hebrew with brand/product names in their original form.
-- Never echo the raw English value of `parsed.product_query` back to the user. Translate or rephrase in Hebrew.
-- Do not invent prices, brands, or stores. Use only what the tool returned.
+- Never echo English `query` or `store_type` values back to the user.
+- Do not invent prices, brands, or stores. Use only what the tools returned.
 
 Length: keep replies brief — 2-3 sentences. The user is on a phone.
 """
@@ -330,9 +337,15 @@ async def run_agent(
                     items, summary = tool_result
                     items = items or []
                     result_count = len(items)
+                    # Route accumulated results by tool name. Tools that don't
+                    # return tray items (clarify, get_user_context, recall_history)
+                    # have items=[] and contribute via their summary only.
                     if tool_name == "search_products":
                         _accumulate_results(result.product_results, items)
-                    # Future: store_search would accumulate into store_results here.
+                    elif tool_name == "search_stores":
+                        _accumulate_results(result.store_results, items)
+                    # clarify / get_user_context / recall_history: no items
+                    # accumulated — their payload reaches the LLM via summary.
 
                     # Send STRUCTURED data back to the LLM so it can compose a
                     # reply that references items by name, price, store. The
@@ -391,19 +404,25 @@ async def run_agent(
     return result
 
 
-def _accumulate_results(accum: list[ProductResult], new_items: list[ProductResult]) -> None:
-    """Append new items into the accumulator, deduping by product_id and
-    capping the total at `_MAX_ACCUMULATED_RESULTS`. Mutates `accum`.
+def _accumulate_results(accum: list, new_items: list) -> None:
+    """Append new items into the accumulator, deduping by id and capping
+    the total at `_MAX_ACCUMULATED_RESULTS`. Mutates `accum`.
+
+    Dedup key: `product_id` for ProductResult, `id` for StoreResult/anything
+    else. Items with no usable id are skipped (defensive — shouldn't happen
+    on real DB rows).
     """
     if not new_items:
         return
-    seen = {getattr(it, "product_id", None) for it in accum}
+    def _key(it):
+        return getattr(it, "product_id", None) or getattr(it, "id", None)
+    seen = {_key(it) for it in accum}
     for item in new_items:
-        pid = getattr(item, "product_id", None)
-        if pid is None or pid in seen:
+        k = _key(item)
+        if k is None or k in seen:
             continue
         accum.append(item)
-        seen.add(pid)
+        seen.add(k)
         if len(accum) >= _MAX_ACCUMULATED_RESULTS:
             break
 
