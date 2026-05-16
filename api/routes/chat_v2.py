@@ -149,9 +149,24 @@ async def chat_v2(
         terminated_by=result.terminated_by,
     )
 
+    intent = _infer_intent(result.terminated_by, trace, body.message)
+
+    # Best-effort telemetry insert. Never blocks the response on failure —
+    # if the DB insert raises (constraint, connection drop, schema drift),
+    # we log and proceed. Telemetry is for observability, not correctness.
+    await _record_trace(
+        db,
+        session_id=session_id,
+        user_id=getattr(current_user, "id", None),
+        message=body.message,
+        intent=intent,
+        trace=trace,
+        voucher_network=body.voucher_network,
+    )
+
     return ChatResponseV2(
         message=result.message,
-        intent=_infer_intent(result.terminated_by, trace, body.message),
+        intent=intent,
         product_results=result.product_results or None,
         store_results=result.store_results or None,
         # needs_location is now True when the agent called clarify with a
@@ -161,6 +176,54 @@ async def chat_v2(
         search_time_ms=elapsed_ms,
         trace=trace,
     )
+
+
+async def _record_trace(
+    db: AsyncSession,
+    *,
+    session_id: Optional[str],
+    user_id: Optional[object],
+    message: str,
+    intent: str,
+    trace: AgentTrace,
+    voucher_network: str,
+) -> None:
+    """Insert one row into agent_traces. Best-effort — never raises."""
+    try:
+        from db.models import AgentTrace as AgentTraceModel
+
+        # Serialize tool calls to JSON-safe dicts for the JSONB column.
+        tool_calls_payload = [
+            {
+                "name": tc.name,
+                "args": tc.args,
+                "duration_ms": tc.duration_ms,
+                "error": tc.error,
+                "result_count": tc.result_count,
+            }
+            for tc in trace.tool_calls
+        ]
+
+        row = AgentTraceModel(
+            session_id=session_id,
+            user_id=user_id,
+            message=message,
+            intent=intent,
+            tool_calls=tool_calls_payload,
+            iterations=trace.iterations,
+            total_latency_ms=trace.total_latency_ms,
+            total_cost_usd=trace.total_cost_usd,
+            terminated_by=trace.terminated_by,
+            voucher_network=voucher_network,
+        )
+        db.add(row)
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001 — telemetry must never break chat
+        logger.warning("chat_v2: agent_trace insert failed (%s) — proceeding", exc)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
 
 _LOCATION_KEYWORDS_IN_PROMPT = ("מהיכן", "מיקום", "עיר", "GPS", "location", "where are you")

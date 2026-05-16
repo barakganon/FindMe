@@ -96,28 +96,55 @@ async def execute_search_stores(
     **_unused: object,
 ) -> tuple[list[StoreResult], str]:
     """
-    Execute the search_stores tool. Wraps `_run_store_search` from chat.py.
+    Execute the search_stores tool. Wraps `_run_store_search` from chat.py
+    and applies the city synonym expansion from `normalization.city_synonyms`
+    to address F-11 (BuyMe regional buckets vs user-typed city names).
+
+    Strategy: when the user supplies a city, expand it to a list of BuyMe
+    bucket strings + the original input, run `_run_store_search` once per
+    expansion, dedupe by store.id, and merge. Typically results in 1-2
+    queries (most cities map to one bucket).
     """
     from api.routes.chat import _run_store_search
+    from normalization.city_synonyms import expand_city
 
-    # ParsedIntent shim — _run_store_search reads city, store_type, online_only.
-    parsed = ParsedIntent(
-        intent="store_search",
-        product_query=params.query,
-        city=params.city,
-        store_type=params.store_type,
-    )
+    # Expand the user's city to BuyMe regional buckets. Empty list = no city
+    # filter at all (skip the city dimension). Single-element list = no
+    # expansion (no match in synonym map, just pass through).
+    cities_to_try = expand_city(params.city) if params.city else [None]
 
-    results = await _run_store_search(
-        parsed=parsed,
-        location=location,
-        db=db,
-    )
+    # Run one search per city/bucket, dedupe by store id, cap at params.limit.
+    seen_ids: set[str] = set()
+    merged: list[StoreResult] = []
+    for city in cities_to_try:
+        parsed = ParsedIntent(
+            intent="store_search",
+            product_query=params.query,
+            city=city,
+            store_type=params.store_type,
+        )
+        try:
+            batch = await _run_store_search(
+                parsed=parsed,
+                location=location,
+                db=db,
+            )
+        except Exception:
+            # One bucket failing shouldn't abort the whole tool call.
+            continue
+        for r in batch:
+            rid = r.id
+            if rid in seen_ids:
+                continue
+            seen_ids.add(rid)
+            merged.append(r)
+        if len(merged) >= params.limit * 3:
+            # Plenty of candidates — stop early to avoid unnecessary queries.
+            break
 
-    # Apply online_only + limit post-fetch (mirror search_products pattern).
     if params.online_only:
-        results = [r for r in results if r.is_online]
-    results = results[: params.limit]
+        merged = [r for r in merged if r.is_online]
+    results = merged[: params.limit]
 
     if not results:
         summary = "לא נמצאו חנויות מתאימות."
