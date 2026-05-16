@@ -526,3 +526,143 @@ async def test_intermediate_content_captured_when_alongside_tool_calls():
     )
     assert result.message == "הנה התוצאה."
     assert "חושב על זה..." in result.intermediate_content
+
+
+# ---------------------------------------------------------------------------
+# W3 tools — clarify, recall_history, get_user_context, search_stores
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_clarify_tool_dispatch_and_intent_inference():
+    """When the agent calls clarify, the trace records it and the route's
+    _infer_intent maps it to 'clarify'."""
+    from api.agent.tools import TOOLS, ClarifyParams, execute_clarify
+    from api.routes.chat_v2 import _infer_intent
+    from api.schemas import AgentTrace, ToolCallTrace
+
+    # Direct execute returns the question verbatim
+    params = ClarifyParams(question="מהיכן אתה?")
+    items, summary = await execute_clarify(params)
+    assert items == []
+    assert summary == "מהיכן אתה?"
+
+    # Synthetic trace with a clarify call → intent="clarify"
+    trace = AgentTrace(
+        tool_calls=[ToolCallTrace(name="clarify", args={"question": "מהיכן אתה?"})],
+        iterations=2,
+    )
+    assert _infer_intent("content", trace, "מסעדות לידי") == "clarify"
+
+
+@pytest.mark.anyio
+async def test_clarify_intent_takes_priority_over_other_tools():
+    """If both clarify AND search_products were called in one turn, intent=clarify."""
+    from api.routes.chat_v2 import _infer_intent
+    from api.schemas import AgentTrace, ToolCallTrace
+
+    trace = AgentTrace(
+        tool_calls=[
+            ToolCallTrace(name="search_products", args={"brand": "Sony"}),
+            ToolCallTrace(name="clarify", args={"question": "איזה דגם?"}),
+        ],
+    )
+    assert _infer_intent("content", trace, "אוזניות") == "clarify"
+
+
+@pytest.mark.anyio
+async def test_search_stores_intent_inference():
+    from api.routes.chat_v2 import _infer_intent
+    from api.schemas import AgentTrace, ToolCallTrace
+
+    trace = AgentTrace(
+        tool_calls=[ToolCallTrace(name="search_stores", args={"city": "Tel Aviv"})],
+    )
+    assert _infer_intent("content", trace, "מסעדות בתל אביב") == "store_search"
+
+
+@pytest.mark.anyio
+async def test_recall_history_with_no_session_state():
+    """recall_history with session_state=None returns the 'no history' summary."""
+    from api.agent.tools import RecallHistoryParams, execute_recall_history
+
+    items, summary = await execute_recall_history(
+        RecallHistoryParams(turn_offset=1),
+        session_state=None,
+    )
+    assert items == []
+    assert "אין היסטוריה" in summary
+
+
+@pytest.mark.anyio
+async def test_recall_history_with_empty_session_state():
+    """recall_history with an empty SessionState returns the 'no history' summary."""
+    from api.agent.session_memory import SessionState
+    from api.agent.tools import RecallHistoryParams, execute_recall_history
+
+    items, summary = await execute_recall_history(
+        RecallHistoryParams(turn_offset=1),
+        session_state=SessionState.empty(),
+    )
+    assert items == []
+    assert "אין היסטוריה" in summary
+
+
+@pytest.mark.anyio
+async def test_recall_history_returns_prior_tray():
+    """recall_history returns serialized prior products + stores from session."""
+    from api.agent.session_memory import SessionState
+    from api.agent.tools import RecallHistoryParams, execute_recall_history
+
+    state = SessionState(
+        last_product_results=[
+            {"product_id": "p1", "canonical_name": "Sony XM5", "price": 1299},
+        ],
+        last_store_results=[
+            {"id": "s1", "name_he": "חנות"},
+        ],
+        last_user_message="אוזניות סוני",
+        last_assistant_message="מצאתי",
+        updated_at="2026-05-16T10:00:00+00:00",
+    )
+    items, summary = await execute_recall_history(
+        RecallHistoryParams(turn_offset=1),
+        session_state=state,
+    )
+    assert items == []
+    payload = json.loads(summary)
+    assert payload["previous_user_message"] == "אוזניות סוני"
+    assert payload["previous_product_count"] == 1
+    assert payload["previous_store_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_get_user_context_anonymous():
+    """get_user_context returns 'not logged in' summary when current_user is None."""
+    from api.agent.tools import GetUserContextParams, execute_get_user_context
+
+    items, summary = await execute_get_user_context(
+        GetUserContextParams(),
+        db=None,  # never accessed for anon
+        current_user=None,
+    )
+    assert items == []
+    assert "לא מחובר" in summary
+
+
+@pytest.mark.anyio
+async def test_location_clarify_sets_needs_location():
+    """When the agent calls clarify with a location-shaped question, the
+    route's _looks_like_location_prompt heuristic returns True."""
+    from api.routes.chat_v2 import _looks_like_location_prompt
+    from api.schemas import AgentTrace, ToolCallTrace
+
+    trace = AgentTrace(
+        tool_calls=[ToolCallTrace(name="clarify", args={"question": "מהיכן אתה?"})],
+    )
+    assert _looks_like_location_prompt(trace) is True
+
+    trace_non_loc = AgentTrace(
+        tool_calls=[ToolCallTrace(name="clarify", args={"question": "מה התקציב שלך?"})],
+    )
+    assert _looks_like_location_prompt(trace_non_loc) is False

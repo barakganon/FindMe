@@ -1,15 +1,14 @@
 """api/routes/chat_v2.py — POST /api/chat/v2 — agentic conversation endpoint.
 
-W2 thin slice: single tool (`search_products`), single LLM, no streaming, no
-session memory persistence. Console-quality output only — the W2 question is
-whether the model can call the tool correctly in Hebrew at ≥80% accuracy.
+W3 thin slice extended: 5 tools (search_products, search_stores,
+get_user_context, recall_history, clarify) + Redis-backed session memory
+so multi-turn references work without the client passing full history.
 
-If the W2 kill-gate passes, W3 extends this with search_stores, get_user_context,
-recall_history, clarify; W5 adds SSE streaming.
+W5 will add SSE streaming. W7 will polish UI affordances.
 
-Anonymous users supported via `get_optional_user` — never blocked. Logged-in
-users get their `User` injected into `tool_context` so future user-aware tools
-(W3+) can read preferences / inferred attributes / history.
+Anonymous users supported via `get_optional_user` — never blocked. Anonymous
+users that want memory across requests pass an `X-Session-ID: <uuid>` header
+(frontend generates per device). Logged-in users get memory keyed by user.id.
 """
 
 from __future__ import annotations
@@ -18,14 +17,20 @@ import logging
 import time
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header
 from openai import AsyncOpenAI
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.agent.loop import run_agent
+from api.agent.session_memory import (
+    derive_session_id,
+    load_session_state,
+    save_session_state,
+)
 from api.agent.tools import TOOL_SPECS, TOOLS
 from api.auth import get_optional_user
-from api.dependencies import get_ai_client, get_db, get_settings
+from api.dependencies import get_ai_client, get_db, get_redis, get_settings
 from api.schemas import (
     AgentTrace,
     ChatRequest,
@@ -41,23 +46,28 @@ router = APIRouter()
 def _infer_intent(terminated_by: str, trace: AgentTrace, message: str) -> str:
     """Best-effort intent label, for v1-shape backwards compat with the eval rubric.
 
-    Maps the agent's terminated_by + tool-call signal to one of the v1 intent
-    strings ('product_search' | 'store_search' | 'help' | 'clarify' | 'error').
+    Maps the agent's terminated_by + tool-call signal to one of the intent
+    strings: 'product_search' | 'store_search' | 'help' | 'clarify' | 'error'.
     """
-    # Errors and degraded terminations surface as an explicit "error" intent so
-    # clients (and the eval harness) can distinguish them from real replies.
+    # Errors and degraded terminations surface as an explicit "error" intent.
     if terminated_by in ("error", "safety_blocked", "empty_response"):
         return "error"
 
     tools_called = {tc.name for tc in trace.tool_calls if not tc.error}
+
+    # Explicit clarification has priority over other tools — when the agent
+    # calls clarify, the intent is "the user needs to answer" regardless of
+    # any other tool that may have run in the same turn.
+    if "clarify" in tools_called:
+        return "clarify"
+
     if "search_products" in tools_called:
         return "product_search"
-    if "search_stores" in tools_called:  # W3+
+    if "search_stores" in tools_called:
         return "store_search"
+    # get_user_context / recall_history alone aren't a user-visible intent;
+    # they're support tools. Fall through to the heuristic.
 
-    # No tools called — could be help or clarify. Use both message shape AND
-    # length-in-characters (Hebrew counts as 1 char per codepoint in Python str,
-    # so the threshold is roughly comparable across scripts).
     text = (message or "").strip()
     if not text or len(text) < 3:
         return "clarify"
@@ -69,16 +79,22 @@ async def chat_v2(
     body: ChatRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     ai: Annotated[AsyncOpenAI, Depends(get_ai_client)],
+    redis: Annotated[Redis, Depends(get_redis)],
     current_user: Annotated[Optional[object], Depends(get_optional_user)] = None,
+    x_session_id: Annotated[Optional[str], Header(alias="X-Session-ID")] = None,
 ) -> ChatResponseV2:
     """Run one turn of the agentic conversation loop and return the result."""
     settings = get_settings()
     started = time.monotonic()
 
+    # Session id: user.id (logged-in) > X-Session-ID header (anon w/ persistence)
+    # > None (anonymous single-turn, no memory)
+    session_id = derive_session_id(current_user, x_session_id)
+
+    # Load prior turn's tray from Redis (graceful empty state if unavailable).
+    session_state = await load_session_state(redis, session_id)
+
     # Build a LocationFilter from session_context GPS if both coords present.
-    # If exactly one coordinate is supplied, that's a client bug — log it
-    # rather than silently ignoring (which would manifest as empty "near me"
-    # results with no signal of why).
     location: Optional[LocationFilter] = None
     sc = body.session_context
     if sc:
@@ -98,9 +114,8 @@ async def chat_v2(
         "db": db,
         "api_key": settings.gemini_api_key,
         "location": location,
-        # current_user is None for anonymous; future user-aware tools (W3+)
-        # can branch on its presence to fetch preferences / inferred attrs.
         "current_user": current_user,
+        "session_state": session_state,  # recall_history reads from here
     }
 
     result = await run_agent(
@@ -115,6 +130,17 @@ async def chat_v2(
 
     elapsed_ms = (time.monotonic() - started) * 1000
 
+    # Persist this turn's tray into session memory for the next turn's recall.
+    # No-op if Redis is unavailable or session_id is None.
+    await save_session_state(
+        redis,
+        session_id,
+        product_results=result.product_results,
+        store_results=result.store_results,
+        user_message=body.message,
+        assistant_message=result.message,
+    )
+
     trace = AgentTrace(
         tool_calls=result.tool_calls,
         iterations=result.iterations,
@@ -128,8 +154,25 @@ async def chat_v2(
         intent=_infer_intent(result.terminated_by, trace, body.message),
         product_results=result.product_results or None,
         store_results=result.store_results or None,
-        needs_location=False,  # W2: no needs_location tool yet — falls back to false
+        # needs_location is now True when the agent called clarify with a
+        # location-related question. Simple heuristic for W3; W5+ can refine.
+        needs_location=_looks_like_location_prompt(trace),
         voucher_network=body.voucher_network,
         search_time_ms=elapsed_ms,
         trace=trace,
     )
+
+
+_LOCATION_KEYWORDS_IN_PROMPT = ("מהיכן", "מיקום", "עיר", "GPS", "location", "where are you")
+
+
+def _looks_like_location_prompt(trace: AgentTrace) -> bool:
+    """If the agent called clarify with a location-shaped question, surface
+    needs_location=True so the frontend can offer a GPS button.
+    """
+    for tc in trace.tool_calls:
+        if tc.name == "clarify" and not tc.error:
+            q = (tc.args.get("question") or "") if isinstance(tc.args, dict) else ""
+            if any(kw in q for kw in _LOCATION_KEYWORDS_IN_PROMPT):
+                return True
+    return False
