@@ -1,20 +1,26 @@
 # tests/eval/golden_queries.yaml
 # ------------------------------------------------------------------------
-# FindMe v2 — Eval harness golden query set (W1 deliverable)
+# FindMe v2 — Eval harness golden query set (W1 deliverable, W2 backfill)
 #
 # Format per query:
 #   id:                   unique kebab-case slug
 #   query:                user message text (Hebrew or English)
 #   history:              optional — previous turns for multi-turn tests
 #                         [{role: user|assistant, content: str}, ...]
-#   expected_intent:      product_search | store_search | help | clarify
+#   expected_intent:      product_search | store_search | help | clarify | error
 #   expected_brand:       optional — if set, top result's brand must match (case-insensitive substring)
-#                         For top-N matching: use brand_in_top: 3 (default 1)
 #   expected_city:        optional — top result's store.city must match (case-insensitive substring)
 #   expected_max_price:   optional — all returned results must have price <= this (when not null)
 #   expected_needs_location: bool — must match ChatResponse.needs_location
 #   expected_has_results: bool — must match (len(product_results)+len(store_results) > 0)
-#   expected_tool_calls:  list — for v2 use only (W2+). Each item: {tool: str, args: dict}
+#   expected_tool_calls:  list — for v2 scoring (W2+):
+#                           []                  → agent must call NO tools (help/clarify/store_search-in-W2)
+#                           [{tool:N, args:{}}] → agent must call tool N with at least these args
+#                           omitted             → tool-call dim not scored (legacy/uncertain queries)
+#                         Tool name aliases: use either `tool:` or `name:` (both accepted by runner).
+#                         W2-only note: there is no `search_stores` tool yet; store_search queries
+#                         should set expected_tool_calls: [] in W2 and be updated to
+#                         [{tool: search_stores, args: {...}}] in W3 when the tool lands.
 #   notes:                free-form — usually pointer to QA finding (F-XX) or scenario name
 #
 # Coverage map (each query tagged below in notes):
@@ -29,8 +35,6 @@
 #   Sally     canonical scenarios for v2      → sally-sarah, sally-yael, sally-avi,
 #                                                sally-rinat, sally-mind-changer
 #
-# When updating: any new query must add at least one dimension tag in notes
-# so the per-dimension score breakdown in runner.py output stays meaningful.
 # ------------------------------------------------------------------------
 
 queries:
@@ -45,6 +49,9 @@ queries:
     expected_brand: sony
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {brand: Sony}
     notes: "F-01 — top result currently returns 'עגילי סאני' (Sani earrings)"
 
   - id: headphones-sony-with-price
@@ -54,6 +61,9 @@ queries:
     expected_max_price: 300
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {brand: Sony, max_price: 300}
     notes: "F-01 + price filter"
 
   - id: watch-apple-hebrew
@@ -62,6 +72,9 @@ queries:
     expected_brand: apple
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {brand: Apple}
     notes: "F-08 — currently returns Lightning earphones / cables instead of watches"
 
   - id: headphones-sony-exact-model
@@ -70,6 +83,9 @@ queries:
     expected_brand: sony
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {brand: Sony}
     notes: "F-08 — exact model lookup, top result must be Sony"
 
   - id: shoes-nike-hebrew
@@ -78,6 +94,9 @@ queries:
     expected_brand: nike
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {brand: Nike}
     notes: "F-01 — Nike brand+category, common Israeli use case"
 
   # ─────────────────────────────────────────────────────────────────────
@@ -90,6 +109,9 @@ queries:
     expected_brand: samsung
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {brand: Samsung}
     notes: "F-09 — single brand currently returns clarify; should browse Samsung"
 
   - id: brand-only-apple-english
@@ -98,6 +120,9 @@ queries:
     expected_brand: apple
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {brand: Apple}
     notes: "F-09 — English single brand"
 
   - id: brand-only-sony
@@ -106,10 +131,15 @@ queries:
     expected_brand: sony
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {brand: Sony}
     notes: "F-09 — English single brand"
 
   # ─────────────────────────────────────────────────────────────────────
   # SECTION 3 — City matching with bucket synonyms — F-11
+  # NOTE (W2): no search_stores tool yet — agent must call NO tools.
+  # In W3 these queries get expected_tool_calls: [{tool: search_stores, args: {city: ...}}]
   # ─────────────────────────────────────────────────────────────────────
 
   - id: tlv-restaurants
@@ -117,6 +147,7 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls: []
     notes: "F-11 — currently returns 1 result; TLV bucket holds 407 stores"
 
   - id: tlv-restaurants-short
@@ -124,6 +155,7 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls: []
     notes: "F-11 — alternative TLV spelling (ת״א)"
 
   - id: tlv-restaurants-no-quote
@@ -131,6 +163,7 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls: []
     notes: "F-11 — alternative TLV spelling (תא, no quote)"
 
   - id: jerusalem-spa
@@ -138,6 +171,7 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls: []
     notes: "F-11 + F-06 — also tests no English fragment in reply"
 
   - id: haifa-restaurants
@@ -145,15 +179,15 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls: []
     notes: "F-11 — Haifa bucket"
 
   - id: eilat-restaurants
     query: "מסעדות באילת"
     expected_intent: store_search
     expected_needs_location: false
-    # Known data gap — Eilat may have no restaurants in catalog.
-    # Test scores intent classification correctly even when empty.
     expected_has_results: false
+    expected_tool_calls: []
     notes: "F-11 + known data gap (Eilat restaurants)"
 
   # ─────────────────────────────────────────────────────────────────────
@@ -165,6 +199,7 @@ queries:
     expected_intent: store_search
     expected_needs_location: true
     expected_has_results: false
+    expected_tool_calls: []
     notes: "F-03 — לידי trigger (the only one that currently works)"
 
   - id: clothing-near-me-bezor
@@ -172,6 +207,7 @@ queries:
     expected_intent: store_search
     expected_needs_location: true
     expected_has_results: false
+    expected_tool_calls: []
     notes: "F-03 — באזור שלי trigger (currently broken)"
 
   - id: restaurants-near-me-karov
@@ -179,6 +215,7 @@ queries:
     expected_intent: store_search
     expected_needs_location: true
     expected_has_results: false
+    expected_tool_calls: []
     notes: "F-03 — קרוב אלי trigger (currently broken)"
 
   - id: shops-near-me-english
@@ -186,6 +223,7 @@ queries:
     expected_intent: store_search
     expected_needs_location: true
     expected_has_results: false
+    expected_tool_calls: []
     notes: "F-03 — English near-me trigger"
 
   # ─────────────────────────────────────────────────────────────────────
@@ -197,6 +235,9 @@ queries:
     expected_intent: product_search
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {}
     notes: "F-02 — currently ~80% product_search, ~20% clarify (random)"
 
   - id: restaurants-tlv-determinism
@@ -204,6 +245,7 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls: []
     notes: "F-02 + F-11 — must be store_search 10/10 (currently ~80%)"
 
   # ─────────────────────────────────────────────────────────────────────
@@ -215,6 +257,7 @@ queries:
     expected_intent: help
     expected_needs_location: false
     expected_has_results: false
+    expected_tool_calls: []
     notes: "Help intent — canonical phrasing"
 
   - id: help-how-does-it-work
@@ -222,6 +265,7 @@ queries:
     expected_intent: help
     expected_needs_location: false
     expected_has_results: false
+    expected_tool_calls: []
     notes: "Help intent — generic Hebrew phrasing"
 
   - id: help-english
@@ -229,6 +273,7 @@ queries:
     expected_intent: help
     expected_needs_location: false
     expected_has_results: false
+    expected_tool_calls: []
     notes: "Help intent — English"
 
   # ─────────────────────────────────────────────────────────────────────
@@ -240,6 +285,7 @@ queries:
     expected_intent: clarify
     expected_needs_location: false
     expected_has_results: false
+    expected_tool_calls: []
     notes: "Clarify — truncated message"
 
   - id: clarify-vague
@@ -247,6 +293,7 @@ queries:
     expected_intent: clarify
     expected_needs_location: false
     expected_has_results: false
+    expected_tool_calls: []
     notes: "Clarify — single word too vague"
 
   # ─────────────────────────────────────────────────────────────────────
@@ -258,13 +305,15 @@ queries:
     expected_intent: clarify
     expected_needs_location: false
     expected_has_results: false
-    notes: "Edge — SQL injection attempt should clarify, never crash"
+    expected_tool_calls: []
+    notes: "Edge — SQL injection attempt should clarify, never crash, never trigger a search"
 
   - id: edge-empty-spaces
     query: "   "
     expected_intent: clarify
     expected_needs_location: false
     expected_has_results: false
+    expected_tool_calls: []
     notes: "Edge — whitespace-only message"
 
   - id: edge-emoji-only
@@ -272,7 +321,8 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
-    notes: "Edge — emoji-only food, infers restaurant search"
+    expected_tool_calls: []
+    notes: "Edge — emoji-only food, infers restaurant search; W2 has no search_stores so 0 tools is correct"
 
   - id: edge-very-long
     query: "אני מחפש מתנה לאמא שלי שאוהבת לבשל אבל גם אוהבת לקרוא וגם לפעמים יוצאת לטיולים ויש לי תקציב של 300 שקל"
@@ -280,6 +330,9 @@ queries:
     expected_max_price: 300
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {max_price: 300}
     notes: "Edge — long natural Hebrew with constraints; tests price extraction"
 
   - id: edge-special-chars
@@ -288,6 +341,9 @@ queries:
     expected_brand: sony
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {brand: Sony}
     notes: "Edge — quotes and dashes, must not break tokenization"
 
   # ─────────────────────────────────────────────────────────────────────
@@ -299,6 +355,9 @@ queries:
     expected_intent: product_search
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {}
     notes: "F-13 — currently returns same Niveah product 4× (dedup bug)"
 
   - id: fashion-shops-tlv
@@ -306,6 +365,7 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls: []
     notes: "F-11 — retail+city, exercises store_type=retail + bucket synonym"
 
   - id: kids-toys-budget
@@ -314,6 +374,9 @@ queries:
     expected_max_price: 200
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {max_price: 200}
     notes: "Category + price filter, complements Yael scenario"
 
   - id: gift-mom-200-hebrew
@@ -322,10 +385,13 @@ queries:
     expected_max_price: 200
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {max_price: 200}
     notes: "Gift framing + price, common Israeli use case"
 
   # ─────────────────────────────────────────────────────────────────────
-  # SECTION 10 — English queries
+  # SECTION 10 — English queries (≥10 required by Story 5.1 AC-1)
   # ─────────────────────────────────────────────────────────────────────
 
   - id: wireless-headphones-english
@@ -333,6 +399,9 @@ queries:
     expected_intent: product_search
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {}
     notes: "English — passed in QA B3.07; should keep working"
 
   - id: restaurants-tlv-english
@@ -340,6 +409,7 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls: []
     notes: "English store search with city — needs city normalization too"
 
   - id: gift-300-english
@@ -348,14 +418,35 @@ queries:
     expected_max_price: 300
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {max_price: 300}
     notes: "English — gift framing with price; broad intent"
+
+  - id: running-shoes-english
+    query: "running shoes under 250 shekels"
+    expected_intent: product_search
+    expected_max_price: 250
+    expected_needs_location: false
+    expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {max_price: 250}
+    notes: "English — category + price; added 2026-05-15 to hit ≥10 English count (AC-1)"
+
+  - id: laptop-cheap-english
+    query: "where can I buy a cheap laptop?"
+    expected_intent: product_search
+    expected_needs_location: false
+    expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {}
+    notes: "English — question form with intent; added 2026-05-15 to hit ≥10 English count (AC-1)"
 
   # ─────────────────────────────────────────────────────────────────────
   # SECTION 11 — Sally canonical scenarios — for v2 (W2+) measurement
   # ─────────────────────────────────────────────────────────────────────
-  # These are scored against v1 with relaxed expectations (intent only).
-  # In v2 they become the primary quality signal — multi-turn coherence,
-  # clarification quality, comparison reasoning, memory surfacing.
 
   - id: sally-sarah-ambiguous-open
     query: "מה אפשר לקנות ב-300 שקל?"
@@ -363,17 +454,21 @@ queries:
     expected_max_price: 300
     expected_needs_location: false
     expected_has_results: true
-    # v2 ideal: clarifying turn, not 12 cards
+    # v2 ideal: clarifying turn, not 12 cards. In W2 the agent will probably
+    # call search_products(max_price=300) since there's no clarify tool yet.
     expected_tool_calls:
-      - tool: clarify
-        args: {context: "ambiguous-open"}
-    notes: "Sally scenario 1 — ambiguous open, v1 dumps cards, v2 should clarify"
+      - tool: search_products
+        args: {max_price: 300}
+    notes: "Sally scenario 1 — ambiguous open, v1 dumps cards, v2 W3+ should clarify"
 
   - id: sally-yael-kid-gift
     query: "מתנה לילד בן 3 לימי הולדת"
     expected_intent: product_search
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {}
     notes: "Sally scenario 2 — constraint discovery, child age extracted by inference pipeline"
 
   - id: sally-avi-comparison
@@ -383,11 +478,11 @@ queries:
       - role: assistant
         content: "מצאתי 3 אוזניות סוני: WH-1000XM5, WH-CH720, WF-1000XM4. תרצה השוואה?"
     query: "מה ההבדל בין השלושה?"
-    expected_intent: product_search  # v1: best-effort; v2 should NOT call search, only compose
+    expected_intent: product_search
     expected_needs_location: false
-    expected_has_results: true       # v1 may search again; v2 reuses tray
-    expected_tool_calls: []          # v2 ideal: no new search, just compose comparison
-    notes: "Sally scenario 3 — comparison turn, v2 should NOT search again"
+    expected_has_results: true
+    expected_tool_calls: []
+    notes: "Sally scenario 3 — comparison turn, v2 should NOT search again — reuse tray"
 
   - id: sally-rinat-memory-recall
     history:
@@ -399,6 +494,7 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls: []
     notes: "Sally scenario 4 — memory surfacing, v2 should resolve 'פעם שעברה' from history"
 
   - id: sally-mind-changer
@@ -415,4 +511,7 @@ queries:
     expected_intent: product_search
     expected_needs_location: false
     expected_has_results: true
+    expected_tool_calls:
+      - tool: search_products
+        args: {}
     notes: "Sally scenario 5 — repair, v2 must fold new constraint into context, not restart"

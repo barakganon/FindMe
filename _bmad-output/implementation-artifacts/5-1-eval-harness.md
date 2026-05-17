@@ -1,6 +1,6 @@
 # Story 5.1: Eval Harness + Golden Queries + Baseline
 
-Status: review
+Status: done
 
 > **Source:** [findme-v2-sprint-plan.md](../planning-artifacts/findme-v2-sprint-plan.md) — Week 1 of the agentic conversation refactor.
 > The eval harness is the *spine* of the entire 11-week sprint. Without it, every prompt iteration in W2-W6 is blind. This story produces the harness and establishes the baseline against the current (single-shot) chat pipeline so improvements are measurable.
@@ -78,6 +78,26 @@ so that **every subsequent prompt change, tool addition, or LLM-provider swap ca
 - [x] **Task 5 (AC-5): Verify no regressions**
   - [x] `.venv/bin/python -m pytest tests/ -q --ignore=tests/eval` reports **29 passed**
   - [x] Confirmed `tests/eval/` is not auto-collected by pytest (`pytest tests/eval --collect-only -q` → `no tests collected`)
+
+### Review Findings (2026-05-15 — 3 reviewers: Blind Hunter, Edge Case Hunter, Acceptance Auditor)
+
+**Patches (must address before promoting to done):**
+
+- [x] [Review][Patch] (MED) AC-1 English query count short — spec ≥10, only 8 strict-English in YAML (sql/emoji/spaces are language-neutral) [tests/eval/golden_queries.yaml] — source: auditor
+- [x] [Review][Patch] (MED) Rubric `tool_calls` example uses key `"tool"` but `ToolCallTrace` schema uses `"name"` — contradiction confuses future authors [tests/eval/rubric.md] — source: auditor
+- [x] [Review][Patch] (MED) `load_queries` uses bracket access (`item["id"]`) — malformed entry kills entire run with bare KeyError, no row context [tests/eval/runner.py: load_queries] — source: edge
+- [x] [Review][Patch] (MED) Empty `queries:` in YAML (None value) crashes `for item in raw["queries"]` with TypeError — needs guard [tests/eval/runner.py: load_queries] — source: edge
+- [x] [Review][Patch] (MED) Duplicate IDs in `golden_queries.yaml` silently collapse the sort-order map — add unique-ID validation at load time [tests/eval/runner.py: run_all] — source: edge
+- [x] [Review][Patch] (LOW) `httpx.AsyncClient()` constructed with no default timeout — connect-phase hangs not covered by per-request 60s [tests/eval/runner.py: run_all] — source: blind
+- [x] [Review][Patch] (LOW) Progress dot prints same `✗` for HTTP errors and legitimate eval failures — operator can't distinguish infra noise from real misses [tests/eval/runner.py: run_one progress] — source: blind
+- [x] [Review][Patch] (LOW) `--json` + `--output` silently incompatible — pick one (write JSON to `--output` or fail with "incompatible flags") [tests/eval/runner.py: main] — source: blind
+- [x] [Review][Patch] (LOW) `command` string for report is built from `vars(args)` — future auth/secret args would land in committed baselines; whitelist args [tests/eval/runner.py: main] — source: blind
+
+**Deferred:**
+
+- [x] [Review][Defer] (LOW) `_tag_for` regex uses `\b` ASCII word boundary — fine for English-only `notes` today but would miss F-XX inside Hebrew prefixes in future [tests/eval/runner.py: _tag_for] — deferred, English-only notes today
+- [x] [Review][Defer] (LOW) `asyncio.get_event_loop().time()` raises DeprecationWarning on 3.10+ and breaks on 3.12 — works today on this stack [tests/eval/runner.py: call_chat] — deferred to Python upgrade
+- [x] [Review][Defer] (LOW) `p95 = latencies[int(len(latencies) * 0.95)]` index is sloppy for small N — works for N≥20, marginal for tiny baselines [tests/eval/runner.py: render_report] — deferred, baseline N always > 20
 
 ## Dev Notes
 

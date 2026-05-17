@@ -32,7 +32,7 @@
 # work justifies the ceremony.
 
 generated: 2026-05-03
-last_updated: 2026-05-15
+last_updated: 2026-05-16
 project: FindMe
 project_key: FM
 tracking_system: file-system
@@ -98,8 +98,8 @@ development_status:
   # 11-week solo plan, soft-launch end W5, public end W11
   # ─────────────────────────────────────────────────────────────────────
   epic-5: in-progress
-  5-1-eval-harness: review                       # W1 — done 2026-05-15, baseline 26/42=61.9%
-  5-2-agent-loop-thin-slice: backlog             # W2 — single tool, kill-gate
+  5-1-eval-harness: done                         # W1 — reviewed+patched 2026-05-16, baseline 26/42=61.9%
+  5-2-agent-loop-thin-slice: done                # W2 — reviewed+patched 2026-05-16, kill-gate harness-measured 21/21=100% tool_call_match
   5-3-tools-and-memory: backlog                  # W3 — 4 more tools + Redis state
   5-4-audit-fixes-and-telemetry: backlog         # W4 — brand backfill, city canon, chain detect, traces
   5-5-streaming-and-soft-launch: backlog         # W5 — SSE + invite-only 5-friend deploy
