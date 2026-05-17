@@ -305,6 +305,22 @@ queries:
     expected_tool_calls: []
     notes: "Help intent — English"
 
+  - id: help-what-is-buyme
+    query: "מה זה BuyMe?"
+    expected_intent: help
+    expected_needs_location: false
+    expected_has_results: false
+    expected_tool_calls: []
+    notes: "W6 probe — Help intent on 'what is BuyMe'"
+
+  - id: help-explain-app
+    query: "explain this app"
+    expected_intent: help
+    expected_needs_location: false
+    expected_has_results: false
+    expected_tool_calls: []
+    notes: "W6 probe — English help variant"
+
   # ─────────────────────────────────────────────────────────────────────
   # SECTION 7 — Clarify intent (ambiguous)
   # ─────────────────────────────────────────────────────────────────────
@@ -324,6 +340,22 @@ queries:
     expected_has_results: false
     expected_tool_calls: []
     notes: "Clarify — single word too vague"
+
+  - id: clarify-question-mark-only
+    query: "?"
+    expected_intent: clarify
+    expected_needs_location: false
+    expected_has_results: false
+    expected_tool_calls: []
+    notes: "W6 probe — Clarify on single punctuation"
+
+  - id: clarify-mah-question
+    query: "מה?"
+    expected_intent: clarify
+    expected_needs_location: false
+    expected_has_results: false
+    expected_tool_calls: []
+    notes: "W6 probe — Clarify on bare 'what?'"
 
   # ─────────────────────────────────────────────────────────────────────
   # SECTION 8 — Edge cases — adversarial inputs
@@ -374,6 +406,14 @@ queries:
       - tool: search_products
         args: {brand: Sony}
     notes: "Edge — quotes and dashes, must not break tokenization"
+
+  - id: edge-three-letters
+    query: "abc"
+    expected_intent: clarify
+    expected_needs_location: false
+    expected_has_results: false
+    expected_tool_calls: []
+    notes: "W6 probe — Edge: 3-letter non-sense should clarify, not search"
 
   # ─────────────────────────────────────────────────────────────────────
   # SECTION 9 — Dedup — F-13
@@ -514,8 +554,10 @@ queries:
     expected_intent: product_search
     expected_needs_location: false
     expected_has_results: true
-    expected_tool_calls: []
-    notes: "Sally scenario 3 — comparison turn, v2 should NOT search again — reuse tray"
+    expected_tool_calls:
+      - tool: recall_history
+        args: {}
+    notes: "Sally scenario 3 — comparison turn, W6: should call recall_history (not search again)"
 
   - id: sally-rinat-memory-recall
     history:

@@ -1,0 +1,79 @@
+name: Eval Harness (nightly)
+
+# W6 deliverable. Runs the v2 eval harness against a deployed backend and
+# uploads the resulting baseline markdown as a workflow artifact.
+#
+# Triggers:
+#   - Nightly schedule (03:30 UTC = 06:30 Israel)
+#   - Manual via workflow_dispatch with optional base-url override
+#
+# IMPORTANT: this workflow assumes the backend is reachable at
+# `${{ inputs.base_url || vars.EVAL_BASE_URL }}`. Until the Render deploy
+# lands, the workflow will fail with a connection error — that's expected.
+# To enable post-launch:
+#   1. Set the repo variable `EVAL_BASE_URL` to the deployed URL
+#   2. Set secret `GEMINI_API_KEY` if your harness needs it (it doesn't —
+#      the backend has its own key)
+#   3. Optionally set repo variable `EVAL_CONCURRENCY` (default 3)
+
+on:
+  schedule:
+    - cron: "30 3 * * *"   # 03:30 UTC daily
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Backend base URL (overrides repo variable EVAL_BASE_URL)"
+        required: false
+        type: string
+      endpoint:
+        description: "Chat endpoint path"
+        required: false
+        default: "/api/chat/v2"
+        type: string
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runner dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install httpx pyyaml
+
+      - name: Resolve base URL
+        id: base
+        run: |
+          BASE="${{ inputs.base_url || vars.EVAL_BASE_URL }}"
+          if [ -z "$BASE" ]; then
+            echo "EVAL_BASE_URL is not set. Set it as a repo variable or pass via workflow input." >&2
+            exit 1
+          fi
+          echo "url=$BASE" >> "$GITHUB_OUTPUT"
+
+      - name: Run eval harness
+        run: |
+          python -m tests.eval.runner \
+            --base-url "${{ steps.base.outputs.url }}" \
+            --endpoint "${{ inputs.endpoint || '/api/chat/v2' }}" \
+            --concurrency ${{ vars.EVAL_CONCURRENCY || 3 }} \
+            --output "tests/eval/baselines/ci-$(date -u +%F).md"
+        env:
+          PYTHONUNBUFFERED: "1"
+
+      - name: Upload baseline artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-baseline-${{ github.run_id }}
+          path: tests/eval/baselines/ci-*.md
+          retention-days: 30

@@ -666,3 +666,79 @@ async def test_location_clarify_sets_needs_location():
         tool_calls=[ToolCallTrace(name="clarify", args={"question": "מה התקציב שלך?"})],
     )
     assert _looks_like_location_prompt(trace_non_loc) is False
+
+
+# ---------------------------------------------------------------------------
+# W6 — Brand re-rank in search_products
+# ---------------------------------------------------------------------------
+
+
+def _make_product(name: str, brand: str | None):
+    from api.schemas import ProductResult, StoreInfo
+    store = StoreInfo(
+        id="s", name_he="", name_en=None, buyme_url=None,
+        is_online=True, city=None, lat=None, lng=None, distance_km=None,
+    )
+    return ProductResult(
+        product_id=name, canonical_name=name, brand=brand, category_path=None,
+        store=store, price=None, currency="ILS", availability=True,
+        product_url=None, match_score=0.5,
+    )
+
+
+def test_rerank_by_brand_matching_items_first():
+    """Items whose brand contains the requested brand sort first."""
+    from api.agent.tools.search_products import _rerank_by_brand
+
+    items = [
+        _make_product("A_Edifier", "Edifier"),
+        _make_product("B_Sony", "Sony"),
+        _make_product("C_NoBrand", None),
+        _make_product("D_SonyCorp", "Sony Corp"),
+    ]
+    ranked = _rerank_by_brand(items, "Sony")
+    names = [r.canonical_name for r in ranked]
+    # Sony items first (B, D), then non-matching (Edifier), then None
+    assert names == ["B_Sony", "D_SonyCorp", "A_Edifier", "C_NoBrand"]
+
+
+def test_rerank_by_brand_case_insensitive():
+    from api.agent.tools.search_products import _rerank_by_brand
+
+    items = [
+        _make_product("A_Other", "Edifier"),
+        _make_product("B_SonyLower", "sony"),
+    ]
+    ranked = _rerank_by_brand(items, "SONY")
+    assert ranked[0].canonical_name == "B_SonyLower"
+
+
+def test_rerank_by_brand_preserves_within_tier_order():
+    """Stable sort: original order maintained within each tier."""
+    from api.agent.tools.search_products import _rerank_by_brand
+
+    items = [
+        _make_product("Sony1", "Sony"),
+        _make_product("Sony2", "Sony"),
+        _make_product("Sony3", "Sony"),
+    ]
+    ranked = _rerank_by_brand(items, "Sony")
+    assert [r.canonical_name for r in ranked] == ["Sony1", "Sony2", "Sony3"]
+
+
+def test_rerank_by_brand_noop_when_brand_empty():
+    """Empty brand string → no rerank."""
+    from api.agent.tools.search_products import _rerank_by_brand
+
+    items = [
+        _make_product("X", "Edifier"),
+        _make_product("Y", "Sony"),
+    ]
+    assert _rerank_by_brand(items, "") == items
+    assert _rerank_by_brand(items, "   ") == items
+
+
+def test_rerank_by_brand_noop_when_results_empty():
+    from api.agent.tools.search_products import _rerank_by_brand
+
+    assert _rerank_by_brand([], "Sony") == []
