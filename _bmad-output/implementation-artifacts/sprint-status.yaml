@@ -32,23 +32,35 @@
 # work justifies the ceremony.
 
 generated: 2026-05-03
-last_updated: 2026-05-07
+last_updated: 2026-05-15
 project: FindMe
 project_key: FM
 tracking_system: file-system
 story_location: "{project-root}/_bmad-output/implementation-artifacts"
 
+# ─────────────────────────────────────────────────────────────────────
+# 2026-05-15 — STRATEGIC PIVOT
+# After a 5-round party-mode discussion, decision: rebuild chat layer
+# as an agentic conversation loop (tool-calling LLM) instead of shipping
+# the current single-shot transactional version. See:
+#   _bmad-output/planning-artifacts/findme-v2-sprint-plan.md
+# Epic 1 stories 1.2–1.5 are SUPERSEDED — they targeted the transactional
+# deploy path which the pivot abandoned. Some of their underlying issues
+# (city normalization, brand filter, dedup) are now covered by Epic 5
+# work weeks W4 (audit fixes) and W6 (prompt iteration).
+# ─────────────────────────────────────────────────────────────────────
+
 development_status:
   # ─────────────────────────────────────────────────────────────────────
-  # Epic 1 — Public Launch (in flight)
+  # Epic 1 — Public Launch (SUPERSEDED 2026-05-15 by v2 pivot to Epic 5)
   # Spec source: START_PROMPT.md (Phases 0–4)
   # ─────────────────────────────────────────────────────────────────────
-  epic-1: in-progress
+  epic-1: superseded
   1-1-pre-deploy-cleanup: done                   # Phase 0 — partial; deferred ACs documented in STATUS.md
-  1-2-render-infra-and-data-migration: backlog  # paused — running private beta first (see 1.5 below)
-  1-3-vercel-frontend-and-cors: backlog          # START_PROMPT Phase 3
-  1-4-production-smoke-test: backlog             # START_PROMPT Phase 4
-  1-5-private-beta-qa-fixes: ready-for-dev       # 9 ACs from 2026-05-05/06 QA pass — ACTIVE
+  1-2-render-infra-and-data-migration: superseded  # v2 pivot — deploy strategy changes
+  1-3-vercel-frontend-and-cors: superseded         # v2 pivot
+  1-4-production-smoke-test: superseded            # v2 pivot
+  1-5-private-beta-qa-fixes: superseded            # parts folded into Epic 5 W4 + W6
   epic-1-retrospective: optional
 
   # ─────────────────────────────────────────────────────────────────────
@@ -79,3 +91,20 @@ development_status:
   4-2-frontend-network-selector: backlog
   4-3-nofshonit-scraper: backlog
   epic-4-retrospective: optional
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Epic 5 — Agentic Conversation Refactor (ACTIVE)
+  # Spec source: planning-artifacts/findme-v2-sprint-plan.md
+  # 11-week solo plan, soft-launch end W5, public end W11
+  # ─────────────────────────────────────────────────────────────────────
+  epic-5: in-progress
+  5-1-eval-harness: review                       # W1 — done 2026-05-15, baseline 26/42=61.9%
+  5-2-agent-loop-thin-slice: backlog             # W2 — single tool, kill-gate
+  5-3-tools-and-memory: backlog                  # W3 — 4 more tools + Redis state
+  5-4-audit-fixes-and-telemetry: backlog         # W4 — brand backfill, city canon, chain detect, traces
+  5-5-streaming-and-soft-launch: backlog         # W5 — SSE + invite-only 5-friend deploy
+  5-6-prompt-iteration: backlog                  # W6 — push eval to 90%+
+  5-7-ui-polish-and-repair: backlog              # W7 — results tray, memory chips, repair
+  5-8-test-rewrite: backlog                      # W8 — 40+ tests around tools
+  5-9-cost-and-deploy-hardening: backlog         # W9 — caching, rate limits, prod deploy
+  epic-5-retrospective: optional
