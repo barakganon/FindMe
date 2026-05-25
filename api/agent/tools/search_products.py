@@ -76,22 +76,30 @@ _PARAMS_SCHEMA = SearchProductsParams.model_json_schema()
 
 _TOOL_DESCRIPTION = (
     "Search the BuyMe gift-card catalog of ~135,000 products across 1,226 partner stores in Israel. "
-    "Call this tool whenever the user describes a product, mentions a brand, or sets a price range. "
-    "The user may write in Hebrew or English — pass values through as-is, the search is bilingual.\n\n"
-    "Always prefer calling this tool over asking clarifying questions when the user has given any "
-    "concrete signal (a brand, a category, a budget, a recipient, an occasion).\n\n"
-    "Examples of correct usage:\n"
+    "Call this tool whenever the user describes a PRODUCT to buy, mentions a brand, or sets a price range. "
+    "The user may write in Hebrew or English — pass brand and query values through as-is.\n\n"
+    "## WHEN to call\n"
     "  - User: 'אוזניות סוני'                  → search_products(query='headphones', brand='Sony')\n"
     "  - User: 'סמסונג'                        → search_products(brand='Samsung')   [single brand is enough]\n"
-    "  - User: 'Apple'                         → search_products(brand='Apple')     [single brand is enough]\n"
+    "  - User: 'Apple'                         → search_products(brand='Apple')     [English single brand]\n"
     "  - User: 'מתנה לאמא עד 300 שקל'        → search_products(query='gift for mom', max_price=300)\n"
     "  - User: 'Sony WH-1000XM5'              → search_products(query='WH-1000XM5', brand='Sony')\n"
     "  - User: 'שעון אפל'                     → search_products(query='watch', brand='Apple')\n"
     "  - User: 'אוזניות בלוטות גיימינג'      → search_products(query='wireless gaming headphones')\n"
-    "  - User: 'spa בירושלים'                  → for *physical store* queries, do NOT call search_products; "
-    "those are stores, not products. (Only call search_products for things you can buy and own.)\n\n"
-    "Returns a list of product results with name, brand, price (or null if unavailable), store info, "
-    "and a direct BuyMe purchase link. Sorts in-stock items before out-of-stock."
+    "  - User: 'צעצועים לילדים'                → search_products(query='kids toys')\n\n"
+    "## When NOT to call (use a different tool or just respond)\n"
+    "  - User asks about PLACES (restaurants, spas, retail stores, hotels) → use `search_stores` instead.\n"
+    "  - User says 'near me' / 'לידי' / 'באזור שלי' without GPS → use `clarify` to ask for city.\n"
+    "  - User asks 'how does this work' / 'מה זה' / 'איך זה עובד' / 'what is BuyMe' → DO NOT call any tool, "
+    "respond directly with help text in Hebrew.\n"
+    "  - User types only whitespace / emoji-only / SQL-injection-shaped strings → use `clarify`.\n"
+    "  - User references previous turn ('הראשונה', 'תראה לי שוב', 'מה ההבדל') → call `recall_history` first, "
+    "do not search again.\n\n"
+    "## Brand handling (CRITICAL — F-01 fix)\n"
+    "When the user mentions a brand, ALWAYS pass it via the `brand` parameter — never bury it inside `query`. "
+    "The tool's post-search re-rank elevates brand-matching items, but only when `brand` is set explicitly.\n\n"
+    "Returns: list of product results with name, brand, price (or null if unavailable), store info, "
+    "and BuyMe purchase link. Sorts brand-matches first when `brand` is set, then in-stock before out-of-stock."
 )
 
 
@@ -103,6 +111,34 @@ SEARCH_PRODUCTS_SPEC: dict = {
         "parameters": _PARAMS_SCHEMA,
     },
 }
+
+
+def _rerank_by_brand(results: list[ProductResult], brand: str) -> list[ProductResult]:
+    """Stable post-search sort that elevates products with matching brand.
+
+    Three tiers (highest first):
+      1. brand contains the requested brand (case-insensitive substring)
+      2. brand is set but does NOT match
+      3. brand is None / empty
+
+    Within each tier, original order is preserved (Python's sort is stable).
+    """
+    if not brand or not results:
+        return results
+    needle = brand.strip().lower()
+    if not needle:
+        return results
+
+    def _tier(item: ProductResult) -> int:
+        b = (item.brand or "").lower()
+        if not b:
+            return 2  # last
+        if needle in b:
+            return 0  # first
+        return 1  # middle
+
+    # Use stable sort on tier only — preserves within-tier ordering.
+    return sorted(results, key=_tier)
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +191,20 @@ async def execute_search_products(
         db=db,
         api_key=api_key,
     )
+
+    # W6: brand re-rank — when the user asked for a specific brand, post-sort
+    # the candidate list so brand-matching items rise to the top. This is a
+    # SOFT filter: non-matching items are kept (in original order) AFTER the
+    # matching ones, so the user still gets a useful set even when the brand
+    # is rare or absent in the catalog.
+    #
+    # Why a soft filter and not a hard SQL clause: the SQL-layer brand filter
+    # was explicitly disabled at chat.py:372 ("brand is already in search_text
+    # for semantic matching") — proved wrong by F-01 QA but the SQL fix is
+    # deferred. Soft re-rank gives most of the F-01/F-08 win without touching
+    # the search SQL.
+    if params.brand:
+        results = _rerank_by_brand(results, params.brand)
 
     # Apply online_only BEFORE slicing to `limit`. Caveat: _run_product_search
     # already caps internally at _CHAT_PAGE_SIZE, so when online_only=True and
