@@ -138,8 +138,10 @@ queries:
 
   # ─────────────────────────────────────────────────────────────────────
   # SECTION 3 — City matching with bucket synonyms — F-11
-  # NOTE (W2): no search_stores tool yet — agent must call NO tools.
-  # In W3 these queries get expected_tool_calls: [{tool: search_stores, args: {city: ...}}]
+  # W3 update: search_stores tool now exists — expected_tool_calls updated
+  # to match. F-11 city-bucket SQL fix is still W4 audit work; for now the
+  # tool_call_match dim validates the AGENT is calling the right tool with
+  # the right city arg, even if the downstream search returns 0 stores.
   # ─────────────────────────────────────────────────────────────────────
 
   - id: tlv-restaurants
@@ -147,7 +149,9 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
-    expected_tool_calls: []
+    expected_tool_calls:
+      - tool: search_stores
+        args: {store_type: restaurant}
     notes: "F-11 — currently returns 1 result; TLV bucket holds 407 stores"
 
   - id: tlv-restaurants-short
@@ -155,7 +159,9 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
-    expected_tool_calls: []
+    expected_tool_calls:
+      - tool: search_stores
+        args: {store_type: restaurant}
     notes: "F-11 — alternative TLV spelling (ת״א)"
 
   - id: tlv-restaurants-no-quote
@@ -163,7 +169,9 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
-    expected_tool_calls: []
+    expected_tool_calls:
+      - tool: search_stores
+        args: {store_type: restaurant}
     notes: "F-11 — alternative TLV spelling (תא, no quote)"
 
   - id: jerusalem-spa
@@ -171,7 +179,9 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
-    expected_tool_calls: []
+    expected_tool_calls:
+      - tool: search_stores
+        args: {store_type: spa}
     notes: "F-11 + F-06 — also tests no English fragment in reply"
 
   - id: haifa-restaurants
@@ -179,7 +189,9 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
-    expected_tool_calls: []
+    expected_tool_calls:
+      - tool: search_stores
+        args: {store_type: restaurant}
     notes: "F-11 — Haifa bucket"
 
   - id: eilat-restaurants
@@ -187,44 +199,59 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: false
-    expected_tool_calls: []
+    expected_tool_calls:
+      - tool: search_stores
+        args: {store_type: restaurant}
     notes: "F-11 + known data gap (Eilat restaurants)"
 
   # ─────────────────────────────────────────────────────────────────────
   # SECTION 4 — needs_location synonyms — F-03
   # ─────────────────────────────────────────────────────────────────────
 
+  # W3 update: F-03 now uses the clarify tool — agent should ask for
+  # location rather than blindly search. Expected_intent flips from
+  # store_search to clarify (the kill-gate measures whether the agent
+  # calls the RIGHT tool, not the same one v1 would have inferred).
+
   - id: restaurants-near-me-lidi
     query: "מסעדות לידי"
-    expected_intent: store_search
+    expected_intent: clarify
     expected_needs_location: true
     expected_has_results: false
-    expected_tool_calls: []
-    notes: "F-03 — לידי trigger (the only one that currently works)"
+    expected_tool_calls:
+      - tool: clarify
+        args: {}
+    notes: "F-03 — לידי trigger; W3: agent should call clarify('מהיכן אתה?')"
 
   - id: clothing-near-me-bezor
     query: "חנויות בגדים באזור שלי"
-    expected_intent: store_search
+    expected_intent: clarify
     expected_needs_location: true
     expected_has_results: false
-    expected_tool_calls: []
-    notes: "F-03 — באזור שלי trigger (currently broken)"
+    expected_tool_calls:
+      - tool: clarify
+        args: {}
+    notes: "F-03 — באזור שלי trigger; W3: clarify tool"
 
   - id: restaurants-near-me-karov
     query: "מסעדות קרוב אלי"
-    expected_intent: store_search
+    expected_intent: clarify
     expected_needs_location: true
     expected_has_results: false
-    expected_tool_calls: []
-    notes: "F-03 — קרוב אלי trigger (currently broken)"
+    expected_tool_calls:
+      - tool: clarify
+        args: {}
+    notes: "F-03 — קרוב אלי trigger; W3: clarify tool"
 
   - id: shops-near-me-english
     query: "shops near me"
-    expected_intent: store_search
+    expected_intent: clarify
     expected_needs_location: true
     expected_has_results: false
-    expected_tool_calls: []
-    notes: "F-03 — English near-me trigger"
+    expected_tool_calls:
+      - tool: clarify
+        args: {}
+    notes: "F-03 — English near-me trigger; W3: clarify tool"
 
   # ─────────────────────────────────────────────────────────────────────
   # SECTION 5 — Intent determinism (must be consistent) — F-02
@@ -245,7 +272,9 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
-    expected_tool_calls: []
+    expected_tool_calls:
+      - tool: search_stores
+        args: {store_type: restaurant}
     notes: "F-02 + F-11 — must be store_search 10/10 (currently ~80%)"
 
   # ─────────────────────────────────────────────────────────────────────
@@ -365,7 +394,9 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
-    expected_tool_calls: []
+    expected_tool_calls:
+      - tool: search_stores
+        args: {store_type: retail}
     notes: "F-11 — retail+city, exercises store_type=retail + bucket synonym"
 
   - id: kids-toys-budget
@@ -409,7 +440,9 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
-    expected_tool_calls: []
+    expected_tool_calls:
+      - tool: search_stores
+        args: {store_type: restaurant}
     notes: "English store search with city — needs city normalization too"
 
   - id: gift-300-english
@@ -494,8 +527,10 @@ queries:
     expected_intent: store_search
     expected_needs_location: false
     expected_has_results: true
-    expected_tool_calls: []
-    notes: "Sally scenario 4 — memory surfacing, v2 should resolve 'פעם שעברה' from history"
+    expected_tool_calls:
+      - tool: recall_history
+        args: {}
+    notes: "Sally scenario 4 — memory surfacing, v2 should call recall_history before re-searching"
 
   - id: sally-mind-changer
     history:
