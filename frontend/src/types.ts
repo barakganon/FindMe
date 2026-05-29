@@ -111,6 +111,54 @@ export interface ChatResponse {
   total_available?: number | null
 }
 
+// --- Agentic v2 (W7) -------------------------------------------------------
+
+export interface MemoryChip {
+  icon: string
+  label: string
+  kind: 'preference' | 'inferred' | 'session'
+  confirmed: boolean
+  source?: string | null
+}
+
+export interface ToolCallTrace {
+  name: string
+  args: Record<string, unknown>
+  duration_ms: number
+  error: string | null
+  result_count: number | null
+}
+
+export interface AgentTrace {
+  tool_calls: ToolCallTrace[]
+  iterations: number
+  total_latency_ms: number
+  total_cost_usd: number | null
+  terminated_by: 'content' | 'max_iterations' | 'cost_budget' | 'error'
+}
+
+export interface ChatResponseV2 {
+  message: string
+  intent: string
+  product_results: ProductResult[] | null
+  store_results: StoreResult[] | null
+  needs_location: boolean
+  location_prompt: string | null
+  voucher_network: string
+  search_time_ms: number
+  chips: MemoryChip[]
+  trace: AgentTrace
+}
+
+export interface StreamThinking {
+  stage: 'thinking' | 'calling_tool' | 'composing'
+  tool?: string
+}
+
+export interface StreamError {
+  error: string
+}
+
 // Auth types
 export interface User {
   id: string;
