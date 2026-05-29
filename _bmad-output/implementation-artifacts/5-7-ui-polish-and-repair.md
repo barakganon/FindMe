@@ -42,15 +42,22 @@ Status: ready-for-dev
 - Callbacks: `onThinking({stage, tool?})`, `onToolCall({name, args, result_count, duration_ms})`,
   `onFinal(ChatResponseV2)`, `onError(error)`. The function returns a `cancel()` handle.
 - Parses SSE frames: split on `\n\n`, extract `event:` and `data:` lines, JSON-decode `data`.
-- Sends `X-Session-ID` header from `localStorage.session_id` (generate UUID on first load,
-  persist forever) so the backend can derive session memory for anonymous users.
+- Sends `X-Session-ID` header from `localStorage.session_id`. Generation lives in **one place**:
+  export `getOrCreateSessionId()` from `frontend/src/api.ts` (read `localStorage.session_id`;
+  if missing, generate `crypto.randomUUID()` and persist). Call it from `streamChatV2` and
+  `sendChatMessage` only — never inline the read elsewhere, to avoid race conditions on first load.
 - Sends `Authorization: Bearer <token>` when a JWT exists in `localStorage`.
 
 ### AC-2: Two-column layout with persistent results tray
 
 - New layout in `ChatInterface.tsx`:
-  - **≥768px:** flex row, chat column `flex-[6]`, tray column `flex-[4]`, `gap-4`.
-  - **<768px:** stack — chat on top, tray below (collapsible header `🛒 שמירה זמנית (N)`).
+  - **≥768px:** flex row, chat column `flex-[6]`, tray column `flex-[4]`, `gap-4`. Tray always
+    visible.
+  - **<768px:** stack — chat on top, tray below as a collapsible panel with header
+    `🛒 שמירה זמנית ({N}) ▾` (or `▴` when expanded). **Default state: collapsed.** Persist
+    the user's open/closed choice in `localStorage.trayOpen` (`"true"` | `"false"`); read on
+    mount, write on every toggle. The persisted choice applies on mobile only — desktop
+    ignores it (tray always visible).
 - Tray data model: `trayItems: Array<{type: 'product'|'store', addedAt: number, item: ProductResult | StoreResult}>`.
 - Tray accumulation rule: on every `onFinal`, merge `final.product_results` and `final.store_results`
   into `trayItems`, deduping by `item.id`. Cap at 20 items total — drop oldest when over.
@@ -67,6 +74,9 @@ Status: ready-for-dev
       icon: str           # emoji, e.g. "👦", "💰", "📍"
       label: str          # Hebrew, e.g. "ילד 3", "₪300", "תל אביב"
       kind: str           # "inferred" | "preference" | "session"
+      confirmed: bool = False  # true when user explicitly confirmed an inferred attribute
+                               # (UserInferredAttribute.is_confirmed=True). Confirmed chips
+                               # render with a stronger background ring; see Layout numbers.
       source: Optional[str] = None  # the message/value that triggered it
   ```
 - Add `chips: list[MemoryChip] = Field(default_factory=list)` to `ChatResponseV2`.
@@ -78,29 +88,52 @@ Status: ready-for-dev
   - For anonymous users: read `session_state.derived_facts` (synthesized in the chat route
     from this turn's `tool_calls[*].args` — e.g. `search_products.brand`, `search_products.max_price`,
     `search_stores.city`).
+- **Chip ordering** (first-to-last, left-to-right in the strip):
+  1. Explicit preferences (`UserPreference` rows) — most stable, user set them consciously
+  2. **Confirmed inferred** attributes (`is_confirmed=true`) — user verified them
+  3. Unconfirmed inferred attributes, ordered by `confidence` descending
+  4. Anonymous session-derived facts (only for anon — logged-in users skip this; their inferred
+     attributes are the canonical source)
+  Cap at 6 visible chips; remainder is dropped (chip strip is for at-a-glance context, not a
+  full profile view).
 - Wire `build_chips` into both `chat_v2.py` and `chat_v2_stream.py` — populate
   `final.chips` right before emitting the `final` event.
 - Frontend: chips render as a horizontal-scrolling strip above the messages list:
   `bg-white border-b border-gray-100 px-3 py-2 flex gap-2 overflow-x-auto`.
   Each chip: `rounded-full bg-blue-50 text-blue-700 text-sm px-3 py-1 flex items-center gap-1`.
 - Empty chip list → strip is hidden (no empty space reserved).
-- Chip mapping rules (in `chips.py`):
-  | DB source | Chip |
-  |---|---|
-  | `inferred.has_children=true` + `child_age_range` | 👦 ילד {age} |
-  | `inferred.gender=female` | 👗 |
-  | `inferred.gender=male` | 👔 |
-  | `inferred.price_sensitivity=budget` | 💰 חסכוני |
-  | `preferences.default_max_price=N` | 💰 ₪{N} |
-  | `preferences.preferred_cities=[X,...]` | 📍 {X} |
-  | session `derived_facts.city=X` | 📍 {X} |
-  | session `derived_facts.max_price=N` | 💰 ₪{N} |
+- Chip mapping rules (in `chips.py`). **Sally's spec explicitly names only the three rows
+  marked "(spec)" below**; the rest are reasonable extensions. **Ship the three "(spec)" rows
+  in this story; ship the extensions only if implementation is trivial — otherwise defer
+  to a follow-up and document in deferred-work.md.**
+  | DB source | Chip | Authority |
+  |---|---|---|
+  | `inferred.has_children=true` + `child_age_range` | 👦 ילד {age} | (spec) |
+  | `preferences.default_max_price=N` | 💰 ₪{N} | (spec) |
+  | `preferences.preferred_cities=[X,...]` | 📍 {X} | (spec) |
+  | session `derived_facts.city=X` | 📍 {X} | (spec, anon variant) |
+  | session `derived_facts.max_price=N` | 💰 ₪{N} | (spec, anon variant) |
+  | `inferred.gender=female` | 👗 | extension |
+  | `inferred.gender=male` | 👔 | extension |
+  | `inferred.price_sensitivity=budget` | 💰 חסכוני | extension |
+  | `inferred.price_sensitivity=premium` | 💎 פרימיום | extension |
 
 ### AC-4: Conversation repair (mind-changer handling)
 
-- Streaming state line in the in-flight assistant bubble:
-  `חושב…` → `מחפש בקטלוג…` → `מסנן…` → final content.
-  Maps from `onThinking({stage, tool})` events. The line is replaced (not appended) on each event.
+- Streaming state line in the in-flight assistant bubble. The backend emits exactly **one**
+  `thinking` event at turn start (`stage: "thinking"`), then a sequence of `tool_call` events,
+  then `final`. There is NO `composing` or `calling_tool` thinking event. The frontend synthesizes
+  the state line from this real event flow:
+  - On `onThinking` (turn start) → show `חושב…`
+  - On first `onToolCall` → show per-tool label:
+    - `search_products` or `search_stores` → `מחפש בקטלוג…`
+    - `get_user_context` → `מאתר העדפות…`
+    - `recall_history` → `נזכר בשיחה…`
+    - `clarify` → `מבקש פרטים…`
+  - On subsequent `onToolCall` events → continue showing the last per-tool label
+  - When `onFinal` is about to arrive (after the last tool_call but before render) → show `מסנן…`
+    for ~200ms, then replace the in-flight bubble with the final assistant message.
+  The line is **replaced**, not appended, on each transition.
 - When the user sends a new message **while** the previous turn's results are still in the tray
   (i.e., tray is non-empty and `messages.length > 2`):
   - The new in-flight assistant bubble shows a thin badge above it: `המשך השיחה ↑`.
@@ -127,7 +160,10 @@ Status: ready-for-dev
 - Keep the welcome message + suggestion chips for the first load (hidden after first message).
 - Keep `ProfileDrawer` and the avatar header button.
 - Keep `requestGPS` flow — `onFinal.needs_location=true` re-triggers GPS, then resends the
-  message via `streamChatV2` with `session_context` populated.
+  message via `streamChatV2` with `session_context` populated. The detection is server-side
+  via `_looks_like_location_prompt(trace)` in `api/routes/chat_v2.py:259` (already wired
+  in W3) — it reads the agent's trace to spot when `clarify` was called for location.
+  The field is reliable; do not duplicate detection client-side.
 - Soft-registration prompt after 3rd user message — unchanged from v1 behavior.
 
 ### AC-7: Tests
@@ -135,7 +171,14 @@ Status: ready-for-dev
 - **Backend (pytest):**
   - `tests/api/test_chips.py` — `build_chips` returns expected shape for: anon empty,
     anon with `derived_facts`, logged-in with inferred only, logged-in with prefs only,
-    logged-in with both (chip ordering: prefs first, then inferred high→low confidence).
+    logged-in with both (chip ordering: prefs → confirmed inferred → unconfirmed inferred
+    by confidence desc). Also: confirmed inferred chip has `confirmed=True`, unconfirmed
+    has `confirmed=False`. 6-chip cap enforced.
+  - `tests/api/test_session_memory.py` — new case `test_derived_facts_extracted_from_tool_calls`:
+    invoke `save_session_state` with mock `tool_calls=[{name: "search_products", args: {brand: "סוני", max_price: 300}}, {name: "search_stores", args: {city: "תל אביב"}}]`,
+    then `load_session_state` and assert
+    `state.derived_facts == {"brand": "סוני", "max_price": "300", "city": "תל אביב"}`.
+    Second case: later turn overwrites earlier values (newer city wins).
   - `tests/api/test_chat_v2_stream.py` — extend existing tests to assert `final` event
     payload includes a `chips` key (empty for anon-no-tools, populated when `derived_facts`
     are set via tool_calls).
@@ -159,8 +202,9 @@ Run all five from the v2 sprint plan against the rebuilt UI. **Scenario 5 (Mind-
    bubble shows the subtitle `החלפת נושא? התוצאות הקודמות עדיין שמורות במגש.` on turn 2 and 3.
    No 500 errors, no message lost.
 
-Document outcomes inline in `tests/eval/baselines/2026-XX-XX-w7-ui-validation.md` (date of
-validation), with pass/fail per scenario and any deltas vs the W6 baseline.
+Document outcomes inline in `tests/eval/baselines/{YYYY-MM-DD}-w7-ui-validation.md` using the
+actual date of the validation run (e.g. `2026-06-04-w7-ui-validation.md`), with pass/fail per
+scenario and any deltas vs the W6 baseline.
 
 ## Tasks / Subtasks
 
@@ -232,7 +276,11 @@ validation), with pass/fail per scenario and any deltas vs the W6 baseline.
 - **Do not cache chat history in Redis.** Conversation history lives in React state.
   Session memory is for tray (`last_product_results` / `last_store_results`) + derived facts only.
 - **Do not modify `api/routes/chat.py` (v1).** It stays as the always-available fallback.
-- **Do not change `_run_product_search` or the SQL** in `api/routes/search.py` — import only.
+  Note: `_run_product_search` also lives in `api/routes/chat.py:250` (it predates the agent
+  refactor and is imported by `api/agent/tools/search_products.py:168`). Do not move, rename,
+  or change its signature in this story — that's tracked under deferred-work (move to
+  `api/search_core.py` during W4 audit followup).
+- **Do not change the SQL** in `api/routes/search.py` — import only.
 - **Do not add a tab switcher, modal, or page route.** Single screen, two columns, tray collapses on mobile.
 - **Do not add an auth library, state manager, or animation lib.** React state + `localStorage` only.
 - **Do not block the SSE stream awaiting cost / save operations** — `chat_v2_stream.py` already
@@ -307,12 +355,28 @@ agent's `compose`d message, not new copy you write**. The static UI copy above s
 
 ### Layout numbers (Tailwind)
 
-- Container: `flex h-screen bg-gray-50` (outer), `flex flex-col md:flex-row gap-0 md:gap-4 flex-1`
-- Chat column: `flex-1 md:flex-[6] flex flex-col min-h-0` (min-h-0 lets the message list scroll)
-- Tray column: `flex-shrink-0 md:flex-[4] border-t md:border-t-0 md:border-r border-gray-200`
+**RTL trap:** the project mandates `dir="rtl"` on the chat container (project-context.md). With
+RTL, `flex-row` puts the first DOM child on the **right**. Sally's screen anatomy has chat on
+the LEFT and tray on the RIGHT. Two valid solutions — pick one and be consistent:
+
+**Option A (preferred):** keep `dir="rtl"` on the outer container, use `flex-row` with DOM order
+[chat, tray] — RTL flips them so tray ends up on the right naturally. **Verify visually after
+build.**
+
+**Option B (fallback if A breaks tray scrolling):** put `dir="ltr"` on the outer flex container,
+then re-apply `dir="rtl"` on the chat column and tray column individually so their inner content
+stays Hebrew-RTL.
+
+- Outer container: `flex h-screen bg-gray-50` with `dir="rtl"` (Option A)
+- Split row: `flex flex-col md:flex-row gap-0 md:gap-4 flex-1`
+- Chat column (DOM-first): `flex-1 md:flex-[6] flex flex-col min-h-0` (min-h-0 lets the message list scroll)
+- Tray column (DOM-second): `flex-shrink-0 md:flex-[4] border-t md:border-t-0 md:border-l border-gray-200`
+  (use `md:border-l` not `md:border-r` because in RTL the divider sits on the chat-facing edge,
+  which is the tray's logical left)
 - Tray panel max width on desktop: don't cap — let flex distribute
 - Chip strip: `bg-white border-b border-gray-100 px-3 py-2 flex gap-2 overflow-x-auto`
 - Single chip: `flex-shrink-0 rounded-full bg-blue-50 text-blue-700 text-sm px-3 py-1 flex items-center gap-1`
+  (confirmed-inferred chips get `bg-blue-100 ring-1 ring-blue-200` for emphasis)
 - Streaming state line: `text-xs text-gray-400 italic mb-1` inside the in-flight assistant bubble
 
 ### Testing standards (project-context.md)
@@ -358,3 +422,4 @@ _To be filled by dev agent._
 | Date | Change |
 |---|---|
 | 2026-05-29 | Story created from v2 sprint plan W7 |
+| 2026-05-29 | Validation pass: fixed `_run_product_search` path, AC-4 streaming line, RTL flex direction, `is_confirmed` chip handling, chip mapping authority, `derived_facts` tests, session-id helper, mobile tray default, baseline filename |
