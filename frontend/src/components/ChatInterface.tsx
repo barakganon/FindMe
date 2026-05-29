@@ -1,7 +1,40 @@
+/**
+ * ChatInterface — v2 agentic chat UI (W7).
+ *
+ * Layout: 60% chat / 40% tray on ≥768px (flex-row with dir="rtl" → tray ends up
+ * on the right naturally). On <768px the tray collapses to a header strip below
+ * the chat; user can toggle open/closed and the choice persists in localStorage.
+ *
+ * Streaming: POST /api/chat/v2/stream via fetch + ReadableStream (NOT EventSource,
+ * which is GET-only). The streamChatV2 helper handles 503 → v1 fallback transparently.
+ *
+ * State surfaces above and around the conversation:
+ *  - Memory chip strip (from final.chips) above the messages list
+ *  - In-flight assistant bubble shows a state line synthesized from onThinking +
+ *    onToolCall events: חושב… → מחפש בקטלוג… / מאתר העדפות… / נזכר… → מסנן…
+ *  - When final.intent differs from the previous assistant's intent and there's
+ *    history, the new bubble gets a subtitle: "החלפת נושא? התוצאות הקודמות עדיין שמורות במגש"
+ *  - Tray accumulates products + stores across all turns, deduped by (type, id),
+ *    capped at 20. Persists in localStorage.findme_tray.
+ *
+ * Preserved from the v1 component:
+ *  - Welcome message + suggestion chips (first load only)
+ *  - Inline GPS button when response.needs_location=true
+ *  - Soft-registration prompt after the 3rd user message
+ *  - ProfileDrawer + avatar header button
+ *  - Existing ResultCard / StoreCard / StoreMap inside assistant bubbles
+ */
+
 import { useState, useRef, useEffect } from 'react'
-import { sendChatMessage, getMe, register, importSession } from '../api'
-import type { ChatMessage, ChatResponse, SessionContext, ProductResult, StoreResult, User } from '../types'
-import { getSavedToken, saveAuth, clearAuth, isRegistrationDismissed, dismissRegistration } from '../store/auth'
+import { streamChatV2, sendChatMessage, getMe, register, importSession } from '../api'
+import type {
+  ChatMessage, SessionContext, ProductResult, StoreResult, User,
+  ChatResponseV2, MemoryChip, ToolCallTrace, StreamThinking, StreamError,
+} from '../types'
+import {
+  getSavedToken, saveAuth, clearAuth,
+  isRegistrationDismissed, dismissRegistration,
+} from '../store/auth'
 import { ResultCard } from './ResultCard'
 import { StoreCard } from './StoreCard'
 import { StoreMap } from './StoreMap'
@@ -12,13 +45,33 @@ interface Props {
   onLocationUpdate: (ctx: SessionContext) => void
 }
 
-interface ChatEntry {
-  role: 'user' | 'assistant'
-  content: string
-  response?: ChatResponse
-}
+// --- Chat-entry model ------------------------------------------------------
 
-const WELCOME_MESSAGE = (name?: string | null): ChatEntry => ({
+interface AssistantEntry {
+  role: 'assistant'
+  content: string
+  response?: ChatResponseV2
+  intent?: string
+  topicChanged?: boolean
+}
+interface UserEntry {
+  role: 'user'
+  content: string
+}
+type ChatEntry = UserEntry | AssistantEntry
+
+// --- Tray model ------------------------------------------------------------
+
+type TrayItem =
+  | { type: 'product'; id: string; addedAt: number; item: ProductResult }
+  | { type: 'store'; id: string; addedAt: number; item: StoreResult }
+
+const TRAY_KEY = 'findme_tray'
+const TRAY_OPEN_KEY = 'findme_tray_open'
+const FALLBACK_NOTICE_KEY = 'findme_fallback_notice_shown'
+const TRAY_MAX = 20
+
+const WELCOME_MESSAGE = (name?: string | null): AssistantEntry => ({
   role: 'assistant',
   content: name
     ? `שלום ${name}! מה תרצה למצוא היום? 🔍`
@@ -32,13 +85,102 @@ const SUGGESTION_CHIPS = [
   '💄 ספא וטיפוח',
 ]
 
+// --- Streaming state line helpers -----------------------------------------
+
+interface StreamingState {
+  stage: 'thinking' | 'tool' | 'composing'
+  tool?: string
+}
+
+function streamingLabel(s: StreamingState | null): string {
+  if (!s) return ''
+  if (s.stage === 'thinking') return 'חושב…'
+  if (s.stage === 'composing') return 'מסנן…'
+  // s.stage === 'tool'
+  switch (s.tool) {
+    case 'search_products':
+    case 'search_stores':
+      return 'מחפש בקטלוג…'
+    case 'get_user_context':
+      return 'מאתר העדפות…'
+    case 'recall_history':
+      return 'נזכר בשיחה…'
+    case 'clarify':
+      return 'מבקש פרטים…'
+    default:
+      return 'עובד…'
+  }
+}
+
+// --- Tray helpers ----------------------------------------------------------
+
+function loadTray(): TrayItem[] {
+  try {
+    const raw = localStorage.getItem(TRAY_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.slice(0, TRAY_MAX)
+  } catch {
+    return []
+  }
+}
+
+function saveTray(items: TrayItem[]): void {
+  try {
+    localStorage.setItem(TRAY_KEY, JSON.stringify(items.slice(0, TRAY_MAX)))
+  } catch {
+    // private mode etc — silently drop
+  }
+}
+
+function mergeIntoTray(
+  current: TrayItem[],
+  products: ProductResult[] | null,
+  stores: StoreResult[] | null,
+): TrayItem[] {
+  const now = Date.now()
+  // Index by (type, id) for dedup
+  const byKey = new Map<string, TrayItem>()
+  for (const it of current) byKey.set(`${it.type}:${it.id}`, it)
+
+  for (const p of products ?? []) {
+    const id = (p as { product_id?: string; id?: string }).product_id
+      ?? (p as { id?: string }).id
+      ?? `${(p.store?.id ?? '')}:${p.canonical_name}`
+    if (!id) continue
+    const key = `product:${id}`
+    if (!byKey.has(key)) byKey.set(key, { type: 'product', id, addedAt: now, item: p })
+  }
+  for (const s of stores ?? []) {
+    const id = s.id
+    if (!id) continue
+    const key = `store:${id}`
+    if (!byKey.has(key)) byKey.set(key, { type: 'store', id, addedAt: now, item: s })
+  }
+
+  // Newest first, cap at TRAY_MAX
+  return Array.from(byKey.values())
+    .sort((a, b) => b.addedAt - a.addedAt)
+    .slice(0, TRAY_MAX)
+}
+
+// --- Component -------------------------------------------------------------
+
 export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
   const [currentUser, setCurrentUser] = useState<User | null>(null)
   const [messages, setMessages] = useState<ChatEntry[]>([WELCOME_MESSAGE(null)])
   const [inputValue, setInputValue] = useState('')
   const [loading, setLoading] = useState(false)
+  const [streamingState, setStreamingState] = useState<StreamingState | null>(null)
   const [chipsVisible, setChipsVisible] = useState(true)
   const [lastMessage, setLastMessage] = useState<string>('')
+  const [chipStrip, setChipStrip] = useState<MemoryChip[]>([])
+  const [tray, setTray] = useState<TrayItem[]>(loadTray)
+  const [trayOpenMobile, setTrayOpenMobile] = useState<boolean>(() => {
+    try { return localStorage.getItem(TRAY_OPEN_KEY) === 'true' } catch { return false }
+  })
+  const [showFallbackNotice, setShowFallbackNotice] = useState(false)
   const [showRegPrompt, setShowRegPrompt] = useState(false)
   const [showRegForm, setShowRegForm] = useState(false)
   const [regEmail, setRegEmail] = useState('')
@@ -49,6 +191,7 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const userMessageCount = useRef(0)
+  const lastIntent = useRef<string | null>(null)
 
   // Load existing auth on mount
   useEffect(() => {
@@ -63,9 +206,24 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
     }
   }, [])
 
+  // Mark fallback-notice as shown only for this tab session
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem(FALLBACK_NOTICE_KEY) === '1') setShowFallbackNotice(false)
+    } catch { /* ignore */ }
+  }, [])
+
+  // Persist tray
+  useEffect(() => { saveTray(tray) }, [tray])
+
+  // Persist mobile tray open/closed
+  useEffect(() => {
+    try { localStorage.setItem(TRAY_OPEN_KEY, String(trayOpenMobile)) } catch { /* ignore */ }
+  }, [trayOpenMobile])
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, loading])
+  }, [messages, streamingState])
 
   const currentSession: SessionContext = sessionContext ?? {
     user_lat: null,
@@ -85,13 +243,9 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
           location_label: 'המיקום שלי',
         }
         onLocationUpdate(updated)
-        if (resendMessage) {
-          sendMessage(resendMessage, updated)
-        }
+        if (resendMessage) sendMessage(resendMessage, updated)
       },
-      () => {
-        // user denied — silently ignore
-      }
+      () => { /* user denied — silently ignore */ },
     )
   }
 
@@ -100,48 +254,117 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
 
     const session = overrideSession ?? currentSession
 
+    // History is the last 10 messages, mapped to ChatMessage shape
     const history: ChatMessage[] = messages.slice(-10).map((m) => ({
       role: m.role,
       content: m.content,
     }))
 
-    const userEntry: ChatEntry = { role: 'user', content: text }
+    const userEntry: UserEntry = { role: 'user', content: text }
     setMessages((prev) => [...prev, userEntry])
     setLastMessage(text)
     setLoading(true)
     setChipsVisible(false)
+    setStreamingState({ stage: 'thinking' })
 
-    // Increment message count and show registration prompt after 3rd message
     userMessageCount.current += 1
     if (userMessageCount.current === 3 && !currentUser && !isRegistrationDismissed()) {
       setShowRegPrompt(true)
     }
 
-    try {
-      const chatResponse = await sendChatMessage(text, history, session)
-      const assistantEntry: ChatEntry = {
-        role: 'assistant',
-        content: chatResponse.message,
-        response: chatResponse,
+    let firstToolSeen = false
+    let receivedFinal = false
+
+    const handle = streamChatV2(text, history, session, {
+      onThinking: (e: StreamThinking) => {
+        if (e.stage === 'composing') {
+          setStreamingState({ stage: 'composing' })
+        } else {
+          setStreamingState({ stage: 'thinking' })
+        }
+      },
+      onToolCall: (tc: ToolCallTrace) => {
+        // First tool call → switch state line label per tool. Subsequent calls
+        // keep replacing the label so the user sees the active stage.
+        firstToolSeen = true
+        setStreamingState({ stage: 'tool', tool: tc.name })
+      },
+      onFinal: (resp: ChatResponseV2) => {
+        receivedFinal = true
+        // Brief "מסנן…" pulse before showing the final bubble — only if at
+        // least one tool was called. For zero-tool turns, skip straight to final.
+        const settleFinal = () => {
+          const priorIntent = lastIntent.current
+          const topicChanged = Boolean(
+            priorIntent && resp.intent && priorIntent !== resp.intent,
+          )
+          lastIntent.current = resp.intent ?? null
+
+          const assistantEntry: AssistantEntry = {
+            role: 'assistant',
+            content: resp.message,
+            response: resp,
+            intent: resp.intent,
+            topicChanged,
+          }
+          setMessages((prev) => [...prev, assistantEntry])
+          setChipStrip(resp.chips ?? [])
+          setTray((prev) => mergeIntoTray(prev, resp.product_results, resp.store_results))
+          setStreamingState(null)
+          setLoading(false)
+          textareaRef.current?.focus()
+        }
+        if (firstToolSeen) {
+          setStreamingState({ stage: 'composing' })
+          window.setTimeout(settleFinal, 200)
+        } else {
+          settleFinal()
+        }
+      },
+      onError: (e: StreamError | Error) => {
+        const detail = 'error' in e ? e.error : e.message
+        const errorEntry: AssistantEntry = {
+          role: 'assistant',
+          content: `מצטער, אירעה שגיאה: ${detail}. נסה שנית.`,
+        }
+        setMessages((prev) => [...prev, errorEntry])
+        setStreamingState(null)
+        setLoading(false)
+        textareaRef.current?.focus()
+      },
+      onFallback: () => {
+        // Cost guard fired — show once per tab session
+        try {
+          if (sessionStorage.getItem(FALLBACK_NOTICE_KEY) !== '1') {
+            setShowFallbackNotice(true)
+            sessionStorage.setItem(FALLBACK_NOTICE_KEY, '1')
+          }
+        } catch { setShowFallbackNotice(true) }
+      },
+    })
+
+    // Safety: if neither final nor error arrives within 30s, surface an error.
+    window.setTimeout(() => {
+      if (!receivedFinal) {
+        handle.cancel()
+        if (loading) {
+          const errorEntry: AssistantEntry = {
+            role: 'assistant',
+            content: 'הבקשה לקחה יותר מדי זמן. נסה שנית.',
+          }
+          setMessages((prev) => [...prev, errorEntry])
+          setStreamingState(null)
+          setLoading(false)
+        }
       }
-      setMessages((prev) => [...prev, assistantEntry])
-    } catch {
-      const errorEntry: ChatEntry = {
-        role: 'assistant',
-        content: 'מצטער, אירעה שגיאה בעיבוד הבקשה שלך. נסה שנית.',
-      }
-      setMessages((prev) => [...prev, errorEntry])
-    } finally {
-      setLoading(false)
-      textareaRef.current?.focus()
-    }
+    }, 30_000)
   }
 
   const handleSend = () => {
     const text = inputValue.trim()
     if (!text || loading) return
     setInputValue('')
-    sendMessage(text)
+    void sendMessage(text)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -153,7 +376,12 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
 
   const handleChipClick = (chip: string) => {
     setInputValue('')
-    sendMessage(chip)
+    void sendMessage(chip)
+  }
+
+  const handleClearTray = () => {
+    setTray([])
+    try { localStorage.removeItem(TRAY_KEY) } catch { /* ignore */ }
   }
 
   const handleRegisterSubmit = async (e: React.FormEvent) => {
@@ -165,16 +393,18 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
       setCurrentUser(result.user)
       await importSession(
         messages
-          .filter(m => m.role !== 'assistant' || !m.response)
+          .filter(m => m.role !== 'assistant' || !(m as AssistantEntry).response)
           .map(m => ({ role: m.role, content: m.content })),
         sessionContext as Record<string, unknown> | null
-      ).catch(() => {})
+      ).catch(() => { /* ignore — best-effort */ })
       setShowRegPrompt(false)
       setShowRegForm(false)
     } catch (err: unknown) {
       setRegError(err instanceof Error ? err.message : 'שגיאה ברישום')
     }
   }
+
+  // --- Render ----------------------------------------------------------------
 
   return (
     <div
@@ -183,17 +413,17 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
       lang="he"
       style={{ fontFamily: "-apple-system, 'Segoe UI', sans-serif" }}
     >
-      {/* Fixed header (56px) */}
-      <header className="bg-white border-b border-gray-100 shadow-sm flex items-center justify-between px-4 shrink-0" style={{ height: '56px' }}>
+      {/* Header */}
+      <header
+        className="bg-white border-b border-gray-100 shadow-sm flex items-center justify-between px-4 shrink-0"
+        style={{ height: '56px' }}
+      >
         <div className="flex items-center gap-2">
           <span className="text-xl font-bold text-blue-600">🔍 FindMe</span>
           <span className="text-gray-400 text-sm hidden sm:inline">חיפוש חכם לכרטיסי BuyMe</span>
         </div>
         <div className="flex items-center gap-2">
-          <span className="bg-blue-600 text-white text-xs font-medium px-2 py-1 rounded-full">
-            BuyMe ✓
-          </span>
-          {/* Avatar / profile button */}
+          <span className="bg-blue-600 text-white text-xs font-medium px-2 py-1 rounded-full">BuyMe ✓</span>
           <button
             onClick={() => setProfileOpen(true)}
             className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white ${
@@ -201,273 +431,268 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
             }`}
             title={currentUser ? currentUser.display_name || currentUser.email : 'התחבר'}
           >
-            {currentUser
-              ? (currentUser.display_name || currentUser.email)[0].toUpperCase()
-              : '👤'
-            }
+            {currentUser ? (currentUser.display_name || currentUser.email)[0].toUpperCase() : '👤'}
           </button>
         </div>
       </header>
 
-      {/* Messages area */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-        {messages.map((msg, index) => (
-          <div
-            key={index}
-            className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-          >
-            <div
-              className={`flex flex-col gap-2 ${
-                msg.role === 'user'
-                  ? 'items-end ml-auto max-w-[80%]'
-                  : 'items-start mr-auto max-w-[85%]'
-              }`}
-            >
-              {/* Text bubble */}
-              <div
-                className={`px-4 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words ${
-                  msg.role === 'user'
-                    ? 'bg-blue-600 text-white rounded-2xl rounded-tr-sm'
-                    : 'bg-white border border-gray-100 shadow-sm text-gray-800 rounded-2xl rounded-tl-sm'
-                }`}
-              >
-                {msg.content}
-
-                {/* GPS prompt button — inline inside assistant bubble */}
-                {msg.role === 'assistant' && msg.response?.needs_location && (
-                  <div className="mt-3">
-                    {currentSession.user_lat != null ? (
-                      <span className="text-xs text-green-700 flex items-center gap-1">
-                        <span>✓</span>
-                        <span>מיקום התקבל — שולח שוב...</span>
-                      </span>
-                    ) : (
-                      <button
-                        onClick={() => requestGPS(lastMessage)}
-                        className="inline-flex items-center gap-1 bg-blue-600 text-white text-xs font-medium px-3 py-1.5 rounded-full hover:bg-blue-700 transition-colors"
-                      >
-                        <span>📍</span>
-                        <span>שתף מיקום</span>
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Search time */}
-              {msg.role === 'assistant' && msg.response && msg.response.search_time_ms > 0 && (
-                <span className="text-xs text-gray-400 px-1">
-                  נמצא תוך {Math.round(msg.response.search_time_ms)} ms
+      {/* Two-column split (chat + tray). On mobile this stacks vertically. */}
+      <div className="flex flex-col md:flex-row flex-1 min-h-0">
+        {/* CHAT COLUMN — first in DOM. With dir="rtl" the visual order in flex-row
+            is reversed, so this column ends up on the LEFT visually. */}
+        <div className="flex-1 md:flex-[6] flex flex-col min-h-0">
+          {/* Chip strip — hidden when empty */}
+          {chipStrip.length > 0 && (
+            <div className="bg-white border-b border-gray-100 px-3 py-2 flex gap-2 overflow-x-auto shrink-0">
+              {chipStrip.map((chip, i) => (
+                <span
+                  key={`${chip.kind}-${chip.label}-${i}`}
+                  className={`flex-shrink-0 rounded-full text-sm px-3 py-1 flex items-center gap-1 ${
+                    chip.confirmed
+                      ? 'bg-blue-100 text-blue-800 ring-1 ring-blue-200'
+                      : 'bg-blue-50 text-blue-700'
+                  }`}
+                  title={chip.source ?? undefined}
+                >
+                  <span>{chip.icon}</span>
+                  <span>{chip.label}</span>
                 </span>
-              )}
+              ))}
+            </div>
+          )}
 
-              {/* Product results grid */}
-              {msg.role === 'assistant' &&
-                msg.response?.product_results &&
-                msg.response.product_results.length > 0 && (
-                  <div className="w-full space-y-3">
-                    <div className="flex overflow-x-auto gap-3 pb-2 sm:grid sm:grid-cols-3 sm:overflow-x-visible">
-                      {msg.response.product_results.slice(0, 6).map((result: ProductResult, i: number) => (
-                        <div key={i} className="shrink-0 w-48 sm:w-auto">
-                          <ResultCard result={result} />
-                        </div>
-                      ))}
+          {/* v1-fallback notice */}
+          {showFallbackNotice && (
+            <div className="bg-gray-50 px-3 py-1 text-xs text-gray-500 italic shrink-0 text-center">
+              מצב מבוסס במקום סוכן (מגבלת עלות יומית)
+            </div>
+          )}
+
+          {/* Messages area */}
+          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+            {messages.map((msg, index) => (
+              <div key={index} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div
+                  className={`flex flex-col gap-2 ${
+                    msg.role === 'user'
+                      ? 'items-end ml-auto max-w-[80%]'
+                      : 'items-start mr-auto max-w-[85%]'
+                  }`}
+                >
+                  {/* Topic-change subtitle (above bubble, assistant only) */}
+                  {msg.role === 'assistant' && (msg as AssistantEntry).topicChanged && (
+                    <div className="text-xs text-gray-500 italic px-2">
+                      החלפת נושא? התוצאות הקודמות עדיין שמורות במגש.
                     </div>
-                    {(() => {
-                      const totalAvailable = msg.response.total_available ?? msg.response.product_results.length
-                      return totalAvailable > 6 ? (
+                  )}
+
+                  {/* Text bubble */}
+                  <div
+                    className={`px-4 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words ${
+                      msg.role === 'user'
+                        ? 'bg-blue-600 text-white rounded-2xl rounded-tr-sm'
+                        : 'bg-white border border-gray-100 shadow-sm text-gray-800 rounded-2xl rounded-tl-sm'
+                    }`}
+                  >
+                    {msg.content}
+
+                    {/* GPS prompt — inline inside assistant bubble */}
+                    {msg.role === 'assistant' && (msg as AssistantEntry).response?.needs_location && (
+                      <div className="mt-3">
+                        {currentSession.user_lat != null ? (
+                          <span className="text-xs text-green-700 flex items-center gap-1">
+                            <span>✓</span>
+                            <span>מיקום התקבל — שולח שוב...</span>
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => requestGPS(lastMessage)}
+                            className="inline-flex items-center gap-1 bg-blue-600 text-white text-xs font-medium px-3 py-1.5 rounded-full hover:bg-blue-700 transition-colors"
+                          >
+                            <span>📍</span>
+                            <span>שתף מיקום</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Latency badge */}
+                  {msg.role === 'assistant' && (msg as AssistantEntry).response && (msg as AssistantEntry).response!.search_time_ms > 0 && (
+                    <span className="text-xs text-gray-400 px-1">
+                      נמצא תוך {Math.round((msg as AssistantEntry).response!.search_time_ms)} ms
+                    </span>
+                  )}
+
+                  {/* Product results */}
+                  {msg.role === 'assistant' && (msg as AssistantEntry).response?.product_results && (msg as AssistantEntry).response!.product_results!.length > 0 && (
+                    <div className="w-full space-y-3">
+                      <div className="flex overflow-x-auto gap-3 pb-2 sm:grid sm:grid-cols-3 sm:overflow-x-visible">
+                        {(msg as AssistantEntry).response!.product_results!.slice(0, 6).map((r, i) => (
+                          <div key={i} className="shrink-0 w-48 sm:w-auto">
+                            <ResultCard result={r} />
+                          </div>
+                        ))}
+                      </div>
+                      {(msg as AssistantEntry).response!.product_results!.length > 6 && (
                         <p className="text-xs text-gray-400 text-center mt-1">
-                          ועוד {totalAvailable - 6} תוצאות נוספות
+                          ועוד {(msg as AssistantEntry).response!.product_results!.length - 6} תוצאות נוספות
                         </p>
-                      ) : null
-                    })()}
-                    {msg.response.product_results.some((r: ProductResult) => r.store.lat != null) && (
-                      <div className="rounded-xl overflow-hidden" style={{ height: '220px' }}>
-                        <StoreMap results={msg.response.product_results} mode="product" />
-                      </div>
-                    )}
-                  </div>
-                )}
-
-              {/* Store results grid */}
-              {msg.role === 'assistant' &&
-                msg.response?.store_results &&
-                msg.response.store_results.length > 0 && (
-                  <div className="w-full space-y-3">
-                    <div className="flex overflow-x-auto gap-3 pb-2 sm:grid sm:grid-cols-3 sm:overflow-x-visible">
-                      {msg.response.store_results.slice(0, 6).map((store: StoreResult, i: number) => (
-                        <div key={store.id ?? i} className="shrink-0 w-48 sm:w-auto">
-                          <StoreCard result={store} />
+                      )}
+                      {(msg as AssistantEntry).response!.product_results!.some((r) => r.store.lat != null) && (
+                        <div className="rounded-xl overflow-hidden" style={{ height: '220px' }}>
+                          <StoreMap results={(msg as AssistantEntry).response!.product_results!} mode="product" />
                         </div>
-                      ))}
+                      )}
                     </div>
-                    {msg.response.store_results.length > 6 && (
-                      <p className="text-xs text-blue-600 text-center">
-                        ועוד {msg.response.store_results.length - 6} חנויות
-                      </p>
-                    )}
-                    {msg.response.store_results.some((s: StoreResult) => s.lat != null) && (
-                      <div className="rounded-xl overflow-hidden" style={{ height: '220px' }}>
-                        <StoreMap results={msg.response.store_results} mode="store" />
+                  )}
+
+                  {/* Store results */}
+                  {msg.role === 'assistant' && (msg as AssistantEntry).response?.store_results && (msg as AssistantEntry).response!.store_results!.length > 0 && (
+                    <div className="w-full space-y-3">
+                      <div className="flex overflow-x-auto gap-3 pb-2 sm:grid sm:grid-cols-3 sm:overflow-x-visible">
+                        {(msg as AssistantEntry).response!.store_results!.slice(0, 6).map((s, i) => (
+                          <div key={s.id ?? i} className="shrink-0 w-48 sm:w-auto">
+                            <StoreCard result={s} />
+                          </div>
+                        ))}
                       </div>
-                    )}
-                  </div>
-                )}
-            </div>
-          </div>
-        ))}
-
-        {/* Registration prompt — after 3rd message */}
-        {showRegPrompt && !currentUser && (
-          <div className="flex justify-start mb-4">
-            <div className="max-w-[85%] bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-sm px-4 py-3">
-              <p className="text-sm text-gray-700 mb-3">רוצה שאזכור את ההעדפות שלך לפעם הבאה? 📝</p>
-              {!showRegForm ? (
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setShowRegForm(true)}
-                    className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-full"
-                  >
-                    צור חשבון
-                  </button>
-                  <button
-                    onClick={() => { setShowRegPrompt(false); dismissRegistration(); }}
-                    className="px-3 py-1.5 bg-gray-100 text-gray-600 text-xs rounded-full"
-                  >
-                    המשך בלי חשבון
-                  </button>
+                      {(msg as AssistantEntry).response!.store_results!.length > 6 && (
+                        <p className="text-xs text-blue-600 text-center">
+                          ועוד {(msg as AssistantEntry).response!.store_results!.length - 6} חנויות
+                        </p>
+                      )}
+                      {(msg as AssistantEntry).response!.store_results!.some((s) => s.lat != null) && (
+                        <div className="rounded-xl overflow-hidden" style={{ height: '220px' }}>
+                          <StoreMap results={(msg as AssistantEntry).response!.store_results!} mode="store" />
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <form onSubmit={handleRegisterSubmit} className="space-y-2">
-                  <input
-                    value={regName}
-                    onChange={e => setRegName(e.target.value)}
-                    placeholder="שם (אופציונלי)"
-                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-right"
-                    dir="rtl"
-                  />
-                  <input
-                    required
-                    type="email"
-                    value={regEmail}
-                    onChange={e => setRegEmail(e.target.value)}
-                    placeholder="אימייל"
-                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-right"
-                    dir="rtl"
-                  />
-                  <input
-                    required
-                    type="password"
-                    value={regPassword}
-                    onChange={e => setRegPassword(e.target.value)}
-                    placeholder="סיסמה"
-                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-right"
-                    dir="rtl"
-                  />
-                  {regError && <p className="text-red-500 text-xs text-right">{regError}</p>}
-                  <button
-                    type="submit"
-                    className="w-full py-1.5 bg-blue-600 text-white text-sm rounded-lg"
-                  >
-                    הירשם
-                  </button>
-                </form>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Suggestion chips — first load only */}
-        {chipsVisible && messages.length === 1 && (
-          <div className="flex flex-wrap gap-2 justify-center mt-2">
-            {SUGGESTION_CHIPS.map((chip) => (
-              <button
-                key={chip}
-                onClick={() => handleChipClick(chip)}
-                className="bg-white border border-gray-200 text-gray-700 text-sm px-4 py-2 rounded-full shadow-sm hover:border-blue-400 hover:text-blue-600 transition-colors"
-              >
-                {chip}
-              </button>
+              </div>
             ))}
-          </div>
-        )}
 
-        {/* Loading indicator */}
-        {loading && (
-          <div className="flex justify-start">
-            <div className="bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-sm px-5 py-3">
-              <span className="inline-flex gap-1 items-center">
-                <span className="animate-bounce text-gray-400 text-lg" style={{ animationDelay: '0ms' }}>•</span>
-                <span className="animate-bounce text-gray-400 text-lg" style={{ animationDelay: '150ms' }}>•</span>
-                <span className="animate-bounce text-gray-400 text-lg" style={{ animationDelay: '300ms' }}>•</span>
-              </span>
+            {/* Registration prompt — after 3rd message */}
+            {showRegPrompt && !currentUser && (
+              <div className="flex justify-start mb-4">
+                <div className="max-w-[85%] bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-sm px-4 py-3">
+                  <p className="text-sm text-gray-700 mb-3">רוצה שאזכור את ההעדפות שלך לפעם הבאה? 📝</p>
+                  {!showRegForm ? (
+                    <div className="flex gap-2">
+                      <button onClick={() => setShowRegForm(true)} className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-full">
+                        צור חשבון
+                      </button>
+                      <button onClick={() => { setShowRegPrompt(false); dismissRegistration() }} className="px-3 py-1.5 bg-gray-100 text-gray-600 text-xs rounded-full">
+                        המשך בלי חשבון
+                      </button>
+                    </div>
+                  ) : (
+                    <form onSubmit={handleRegisterSubmit} className="space-y-2">
+                      <input value={regName} onChange={e => setRegName(e.target.value)} placeholder="שם (אופציונלי)" className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-right" dir="rtl" />
+                      <input required type="email" value={regEmail} onChange={e => setRegEmail(e.target.value)} placeholder="אימייל" className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-right" dir="rtl" />
+                      <input required type="password" value={regPassword} onChange={e => setRegPassword(e.target.value)} placeholder="סיסמה" className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-right" dir="rtl" />
+                      {regError && <p className="text-red-500 text-xs text-right">{regError}</p>}
+                      <button type="submit" className="w-full py-1.5 bg-blue-600 text-white text-sm rounded-lg">הירשם</button>
+                    </form>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Suggestion chips — first load only */}
+            {chipsVisible && messages.length === 1 && (
+              <div className="flex flex-wrap gap-2 justify-center mt-2">
+                {SUGGESTION_CHIPS.map((chip) => (
+                  <button
+                    key={chip}
+                    onClick={() => handleChipClick(chip)}
+                    className="bg-white border border-gray-200 text-gray-700 text-sm px-4 py-2 rounded-full shadow-sm hover:border-blue-400 hover:text-blue-600 transition-colors"
+                  >
+                    {chip}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* In-flight assistant bubble with streaming state line */}
+            {streamingState && (
+              <div className="flex justify-start">
+                <div className="bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-sm px-4 py-3">
+                  <span className="text-xs text-gray-400 italic">{streamingLabel(streamingState)}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Loading fallback dots when stream is connecting but no thinking event yet */}
+            {loading && !streamingState && (
+              <div className="flex justify-start">
+                <div className="bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-sm px-5 py-3">
+                  <span className="inline-flex gap-1 items-center">
+                    <span className="animate-bounce text-gray-400 text-lg" style={{ animationDelay: '0ms' }}>•</span>
+                    <span className="animate-bounce text-gray-400 text-lg" style={{ animationDelay: '150ms' }}>•</span>
+                    <span className="animate-bounce text-gray-400 text-lg" style={{ animationDelay: '300ms' }}>•</span>
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Location status bar (above input) */}
+          {currentSession.location_label && (
+            <div className="px-4 py-1.5 bg-green-50 border-t border-green-100 flex items-center justify-between text-xs text-green-700 shrink-0">
+              <span>📍 {currentSession.location_label}</span>
+              <button
+                onClick={() => onLocationUpdate({ ...currentSession, user_lat: null, user_lng: null, location_label: null })}
+                className="text-gray-400 hover:text-red-500 transition-colors mr-2"
+                aria-label="נקה מיקום"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {/* Input bar */}
+          <div className="bg-white border-t border-gray-200 shadow-[0_-2px_8px_rgba(0,0,0,0.06)] px-4 py-3 shrink-0" style={{ minHeight: '64px' }}>
+            <div className="flex items-center gap-2 max-w-3xl mx-auto">
+              <button
+                onClick={handleSend}
+                disabled={loading || !inputValue.trim()}
+                className="shrink-0 flex items-center justify-center w-10 h-10 bg-blue-600 text-white rounded-full hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                aria-label="שלח"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+                  <path fillRule="evenodd" d="M11.47 2.47a.75.75 0 011.06 0l7.5 7.5a.75.75 0 11-1.06 1.06l-6.22-6.22V21a.75.75 0 01-1.5 0V4.81l-6.22 6.22a.75.75 0 11-1.06-1.06l7.5-7.5z" clipRule="evenodd" />
+                </svg>
+              </button>
+              <textarea
+                ref={textareaRef}
+                dir="rtl"
+                rows={1}
+                placeholder="שאל אותי על BuyMe..."
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={handleKeyDown}
+                disabled={loading}
+                className="flex-1 resize-none border border-gray-200 rounded-2xl px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-300 disabled:opacity-60 transition"
+                style={{ maxHeight: '120px', overflowY: 'auto' }}
+              />
             </div>
           </div>
-        )}
+        </div>
 
-        {/* Scroll anchor */}
-        <div ref={messagesEndRef} />
+        {/* TRAY COLUMN — second in DOM. RTL flex-row puts it on the right visually. */}
+        <TrayPanel
+          items={tray}
+          onClear={handleClearTray}
+          mobileOpen={trayOpenMobile}
+          onMobileToggle={() => setTrayOpenMobile((v) => !v)}
+        />
       </div>
 
-      {/* Location status bar */}
-      {currentSession.location_label && (
-        <div className="px-4 py-1.5 bg-green-50 border-t border-green-100 flex items-center justify-between text-xs text-green-700 shrink-0">
-          <span>📍 {currentSession.location_label}</span>
-          <button
-            onClick={() =>
-              onLocationUpdate({
-                ...currentSession,
-                user_lat: null,
-                user_lng: null,
-                location_label: null,
-              })
-            }
-            className="text-gray-400 hover:text-red-500 transition-colors mr-2"
-            aria-label="נקה מיקום"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
-      {/* Fixed input bar (64px) */}
-      <div className="bg-white border-t border-gray-200 shadow-[0_-2px_8px_rgba(0,0,0,0.06)] px-4 py-3 shrink-0" style={{ minHeight: '64px' }}>
-        <div className="flex items-center gap-2 max-w-3xl mx-auto">
-          <button
-            onClick={handleSend}
-            disabled={loading || !inputValue.trim()}
-            className="shrink-0 flex items-center justify-center w-10 h-10 bg-blue-600 text-white rounded-full hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            aria-label="שלח"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-              className="w-5 h-5"
-            >
-              <path
-                fillRule="evenodd"
-                d="M11.47 2.47a.75.75 0 011.06 0l7.5 7.5a.75.75 0 11-1.06 1.06l-6.22-6.22V21a.75.75 0 01-1.5 0V4.81l-6.22 6.22a.75.75 0 11-1.06-1.06l7.5-7.5z"
-                clipRule="evenodd"
-              />
-            </svg>
-          </button>
-          <textarea
-            ref={textareaRef}
-            dir="rtl"
-            rows={1}
-            placeholder="שאל אותי על BuyMe..."
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={loading}
-            className="flex-1 resize-none border border-gray-200 rounded-2xl px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-300 disabled:opacity-60 transition"
-            style={{ maxHeight: '120px', overflowY: 'auto' }}
-          />
-        </div>
-      </div>
-
-      {/* Profile Drawer */}
+      {/* Profile drawer */}
       {profileOpen && (
         <ProfileDrawer
           user={currentUser}
@@ -477,9 +702,66 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
             setCurrentUser(null)
             setProfileOpen(false)
             setMessages([WELCOME_MESSAGE(null)])
+            setChipStrip([])
+            // Don't auto-clear tray — user might want to keep their accumulated items
           }}
         />
       )}
     </div>
+  )
+}
+
+// --- TrayPanel sub-component ----------------------------------------------
+
+interface TrayPanelProps {
+  items: TrayItem[]
+  onClear: () => void
+  mobileOpen: boolean
+  onMobileToggle: () => void
+}
+
+function TrayPanel({ items, onClear, mobileOpen, onMobileToggle }: TrayPanelProps) {
+  const count = items.length
+  return (
+    <aside
+      className="
+        flex-shrink-0 md:flex-[4]
+        border-t md:border-t-0 md:border-l border-gray-200
+        bg-white
+        flex flex-col min-h-0
+      "
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-100 shrink-0">
+        <button
+          className="text-sm font-medium text-gray-700 flex items-center gap-1 md:cursor-default"
+          onClick={onMobileToggle}
+        >
+          <span>🛒</span>
+          <span>שמירה זמנית{count > 0 ? ` (${count})` : ''}</span>
+          <span className="md:hidden text-xs text-gray-400 ml-1">{mobileOpen ? '▴' : '▾'}</span>
+        </button>
+        {count > 0 && (
+          <button onClick={onClear} className="text-xs text-gray-500 hover:text-red-500">
+            🗑️ נקה
+          </button>
+        )}
+      </div>
+
+      {/* Items — always shown on desktop; mobile respects mobileOpen */}
+      <div className={`${mobileOpen ? 'block' : 'hidden'} md:block flex-1 overflow-y-auto px-3 py-3 space-y-3`}>
+        {count === 0 ? (
+          <p className="text-xs text-gray-400 italic text-center mt-4">
+            אין עדיין מועדפים — חיפושים יישמרו כאן
+          </p>
+        ) : (
+          items.map((it, i) => (
+            <div key={`${it.type}:${it.id}:${i}`}>
+              {it.type === 'product' ? <ResultCard result={it.item} /> : <StoreCard result={it.item} />}
+            </div>
+          ))
+        )}
+      </div>
+    </aside>
   )
 }
