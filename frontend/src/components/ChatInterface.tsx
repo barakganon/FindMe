@@ -53,6 +53,13 @@ interface AssistantEntry {
   response?: ChatResponseV2
   intent?: string
   topicChanged?: boolean
+  // The user prompt that triggered this assistant turn. Used by the inline GPS
+  // button to resend the *original* message even if turns have interleaved
+  // since the bubble was rendered (otherwise `lastMessage` is stale).
+  originPrompt?: string
+  // Marks bubbles produced by client-side error paths. Filtered out of LLM
+  // history so the agent doesn't see its own error messages as prior turns.
+  isError?: boolean
 }
 interface UserEntry {
   role: 'user'
@@ -66,10 +73,18 @@ type TrayItem =
   | { type: 'product'; id: string; addedAt: number; item: ProductResult }
   | { type: 'store'; id: string; addedAt: number; item: StoreResult }
 
+interface TrayBlob {
+  v: number
+  items: TrayItem[]
+}
+
 const TRAY_KEY = 'findme_tray'
 const TRAY_OPEN_KEY = 'findme_tray_open'
 const FALLBACK_NOTICE_KEY = 'findme_fallback_notice_shown'
 const TRAY_MAX = 20
+// Bump when TrayItem shape changes incompatibly — older blobs are discarded
+// rather than rendered into <ResultCard result={undefined}>.
+const TRAY_SCHEMA_VERSION = 1
 
 const WELCOME_MESSAGE = (name?: string | null): AssistantEntry => ({
   role: 'assistant',
@@ -119,16 +134,35 @@ function loadTray(): TrayItem[] {
     const raw = localStorage.getItem(TRAY_KEY)
     if (!raw) return []
     const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.slice(0, TRAY_MAX)
+    // New format: { v, items }. Older format (v0): bare array — discard on
+    // version mismatch rather than render undefined items.
+    if (
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed) &&
+      parsed.v === TRAY_SCHEMA_VERSION && Array.isArray(parsed.items)
+    ) {
+      return (parsed.items as TrayItem[]).filter(_isValidTrayItem).slice(0, TRAY_MAX)
+    }
+    // Unknown shape — discard and start fresh
+    return []
   } catch {
     return []
   }
 }
 
+function _isValidTrayItem(it: unknown): it is TrayItem {
+  if (!it || typeof it !== 'object') return false
+  const x = it as { type?: unknown; id?: unknown; item?: unknown }
+  return (
+    (x.type === 'product' || x.type === 'store') &&
+    typeof x.id === 'string' &&
+    x.item != null && typeof x.item === 'object'
+  )
+}
+
 function saveTray(items: TrayItem[]): void {
   try {
-    localStorage.setItem(TRAY_KEY, JSON.stringify(items.slice(0, TRAY_MAX)))
+    const blob: TrayBlob = { v: TRAY_SCHEMA_VERSION, items: items.slice(0, TRAY_MAX) }
+    localStorage.setItem(TRAY_KEY, JSON.stringify(blob))
   } catch {
     // private mode etc — silently drop
   }
@@ -145,9 +179,16 @@ function mergeIntoTray(
   for (const it of current) byKey.set(`${it.type}:${it.id}`, it)
 
   for (const p of products ?? []) {
-    const id = (p as { product_id?: string; id?: string }).product_id
+    // Prefer the stable UUID. Synthesized fallback is only used when the
+    // result is missing both id forms — extremely rare; we use the stable
+    // store-id + product_url combo (URL differs per variant) so distinct
+    // variants do NOT collapse into one tray slot.
+    const explicitId = (p as { product_id?: string; id?: string }).product_id
       ?? (p as { id?: string }).id
-      ?? `${(p.store?.id ?? '')}:${p.canonical_name}`
+    const variantKey = p.product_url ?? p.canonical_name
+    const id = explicitId && explicitId.length > 0
+      ? explicitId
+      : (p.store?.id && variantKey ? `${p.store.id}|${variantKey}` : null)
     if (!id) continue
     const key = `product:${id}`
     if (!byKey.has(key)) byKey.set(key, { type: 'product', id, addedAt: now, item: p })
@@ -192,6 +233,12 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const userMessageCount = useRef(0)
   const lastIntent = useRef<string | null>(null)
+  // Track in-flight stream + timers per turn so we can cancel cleanly on
+  // unmount, on a new send, and on success/error.
+  const activeHandleRef = useRef<{ cancel(): void } | null>(null)
+  const settleTimerRef = useRef<number | null>(null)
+  const safetyTimerRef = useRef<number | null>(null)
+  const isMountedRef = useRef(true)
 
   // Load existing auth on mount
   useEffect(() => {
@@ -225,6 +272,21 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, streamingState])
 
+  // Cancel in-flight stream + timers on unmount so stale callbacks don't
+  // mutate state after the component is gone.
+  useEffect(() => {
+    isMountedRef.current = true
+    return () => {
+      isMountedRef.current = false
+      activeHandleRef.current?.cancel()
+      activeHandleRef.current = null
+      if (settleTimerRef.current !== null) window.clearTimeout(settleTimerRef.current)
+      if (safetyTimerRef.current !== null) window.clearTimeout(safetyTimerRef.current)
+      settleTimerRef.current = null
+      safetyTimerRef.current = null
+    }
+  }, [])
+
   const currentSession: SessionContext = sessionContext ?? {
     user_lat: null,
     user_lng: null,
@@ -249,16 +311,36 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
     )
   }
 
+  // Clears any pending settle/safety timers for the previous (or current) turn.
+  const clearPendingTimers = () => {
+    if (settleTimerRef.current !== null) {
+      window.clearTimeout(settleTimerRef.current)
+      settleTimerRef.current = null
+    }
+    if (safetyTimerRef.current !== null) {
+      window.clearTimeout(safetyTimerRef.current)
+      safetyTimerRef.current = null
+    }
+  }
+
   const sendMessage = async (text: string, overrideSession?: SessionContext) => {
     if (!text.trim() || loading) return
 
+    // A new send invalidates any prior in-flight turn's timers/handle. Without
+    // this, a 200ms settle or 30s safety from the previous turn can land in
+    // the middle of this one and graft prior results onto the new conversation.
+    activeHandleRef.current?.cancel()
+    activeHandleRef.current = null
+    clearPendingTimers()
+
     const session = overrideSession ?? currentSession
 
-    // History is the last 10 messages, mapped to ChatMessage shape
-    const history: ChatMessage[] = messages.slice(-10).map((m) => ({
-      role: m.role,
-      content: m.content,
-    }))
+    // History: last 10 messages, but EXCLUDE error bubbles — otherwise the
+    // LLM sees its own "מצטער, אירעה שגיאה…" as prior assistant content.
+    const history: ChatMessage[] = messages
+      .filter((m) => !(m.role === 'assistant' && (m as AssistantEntry).isError))
+      .slice(-10)
+      .map((m) => ({ role: m.role, content: m.content }))
 
     const userEntry: UserEntry = { role: 'user', content: text }
     setMessages((prev) => [...prev, userEntry])
@@ -272,33 +354,50 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
       setShowRegPrompt(true)
     }
 
+    // Per-turn flags — captured in closures so they don't race with concurrent
+    // turn state. `originPrompt` is stamped into the produced assistant entry
+    // so the inline GPS button later resends THIS message, not a stale `lastMessage`.
     let firstToolSeen = false
-    let receivedFinal = false
+    const originPrompt = text
+
+    const finishTurn = () => {
+      clearPendingTimers()
+      activeHandleRef.current = null
+      if (!isMountedRef.current) return
+      setStreamingState(null)
+      setLoading(false)
+      textareaRef.current?.focus()
+    }
 
     const handle = streamChatV2(text, history, session, {
       onThinking: (e: StreamThinking) => {
-        if (e.stage === 'composing') {
-          setStreamingState({ stage: 'composing' })
-        } else {
-          setStreamingState({ stage: 'thinking' })
-        }
+        if (!isMountedRef.current) return
+        setStreamingState({ stage: e.stage === 'composing' ? 'composing' : 'thinking' })
       },
       onToolCall: (tc: ToolCallTrace) => {
-        // First tool call → switch state line label per tool. Subsequent calls
-        // keep replacing the label so the user sees the active stage.
+        if (!isMountedRef.current) return
         firstToolSeen = true
         setStreamingState({ stage: 'tool', tool: tc.name })
       },
       onFinal: (resp: ChatResponseV2) => {
-        receivedFinal = true
-        // Brief "מסנן…" pulse before showing the final bubble — only if at
-        // least one tool was called. For zero-tool turns, skip straight to final.
+        // settleFinal runs after a brief composing pulse (when a tool fired)
+        // or immediately (for zero-tool turns).
         const settleFinal = () => {
+          settleTimerRef.current = null
+          if (!isMountedRef.current) return
+
           const priorIntent = lastIntent.current
+          const respIntent = resp.intent ?? null
+          // Topic-change banner: ignore error-class intents on both sides so
+          // a transient error doesn't cascade a "החלפת נושא?" badge into the
+          // next legitimate turn.
+          const isErrorIntent = (i: string | null) => i === 'error' || i === null
           const topicChanged = Boolean(
-            priorIntent && resp.intent && priorIntent !== resp.intent,
+            !isErrorIntent(priorIntent) &&
+              !isErrorIntent(respIntent) &&
+              priorIntent !== respIntent,
           )
-          lastIntent.current = resp.intent ?? null
+          if (!isErrorIntent(respIntent)) lastIntent.current = respIntent
 
           const assistantEntry: AssistantEntry = {
             role: 'assistant',
@@ -306,34 +405,36 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
             response: resp,
             intent: resp.intent,
             topicChanged,
+            originPrompt,
           }
           setMessages((prev) => [...prev, assistantEntry])
           setChipStrip(resp.chips ?? [])
           setTray((prev) => mergeIntoTray(prev, resp.product_results, resp.store_results))
-          setStreamingState(null)
-          setLoading(false)
-          textareaRef.current?.focus()
+          finishTurn()
         }
         if (firstToolSeen) {
-          setStreamingState({ stage: 'composing' })
-          window.setTimeout(settleFinal, 200)
+          if (isMountedRef.current) setStreamingState({ stage: 'composing' })
+          settleTimerRef.current = window.setTimeout(settleFinal, 200)
         } else {
           settleFinal()
         }
       },
       onError: (e: StreamError | Error) => {
+        if (!isMountedRef.current) {
+          finishTurn()
+          return
+        }
         const detail = 'error' in e ? e.error : e.message
         const errorEntry: AssistantEntry = {
           role: 'assistant',
           content: `מצטער, אירעה שגיאה: ${detail}. נסה שנית.`,
+          isError: true,
         }
         setMessages((prev) => [...prev, errorEntry])
-        setStreamingState(null)
-        setLoading(false)
-        textareaRef.current?.focus()
+        finishTurn()
       },
       onFallback: () => {
-        // Cost guard fired — show once per tab session
+        if (!isMountedRef.current) return
         try {
           if (sessionStorage.getItem(FALLBACK_NOTICE_KEY) !== '1') {
             setShowFallbackNotice(true)
@@ -343,20 +444,23 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
       },
     })
 
-    // Safety: if neither final nor error arrives within 30s, surface an error.
-    window.setTimeout(() => {
-      if (!receivedFinal) {
-        handle.cancel()
-        if (loading) {
-          const errorEntry: AssistantEntry = {
-            role: 'assistant',
-            content: 'הבקשה לקחה יותר מדי זמן. נסה שנית.',
-          }
-          setMessages((prev) => [...prev, errorEntry])
-          setStreamingState(null)
-          setLoading(false)
-        }
+    activeHandleRef.current = handle
+
+    // Safety timer: if neither final nor error arrives in 30s, surface an error.
+    // Guarded with the handle ref — if a new turn already replaced the handle,
+    // this is a no-op.
+    safetyTimerRef.current = window.setTimeout(() => {
+      safetyTimerRef.current = null
+      if (activeHandleRef.current !== handle) return  // superseded by next turn
+      handle.cancel()
+      if (!isMountedRef.current) return
+      const errorEntry: AssistantEntry = {
+        role: 'assistant',
+        content: 'הבקשה לקחה יותר מדי זמן. נסה שנית.',
+        isError: true,
       }
+      setMessages((prev) => [...prev, errorEntry])
+      finishTurn()
     }, 30_000)
   }
 
@@ -452,7 +556,11 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
                       ? 'bg-blue-100 text-blue-800 ring-1 ring-blue-200'
                       : 'bg-blue-50 text-blue-700'
                   }`}
-                  title={chip.source ?? undefined}
+                  // Intentionally NO title= here — `chip.source` can contain
+                  // the raw user message that triggered the inference, which
+                  // would leak as a tooltip on shoulder-surfed/shared screens.
+                  // The source field stays in the response payload for backend
+                  // debugging and the ProfileDrawer's transparency view only.
                 >
                   <span>{chip.icon}</span>
                   <span>{chip.label}</span>
@@ -506,7 +614,12 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
                           </span>
                         ) : (
                           <button
-                            onClick={() => requestGPS(lastMessage)}
+                            // Resend the message that produced THIS needs_location
+                            // bubble — not `lastMessage`, which after interleaved
+                            // sends would be a different turn's text entirely.
+                            onClick={() => requestGPS(
+                              (msg as AssistantEntry).originPrompt ?? lastMessage,
+                            )}
                             className="inline-flex items-center gap-1 bg-blue-600 text-white text-xs font-medium px-3 py-1.5 rounded-full hover:bg-blue-700 transition-colors"
                           >
                             <span>📍</span>
@@ -615,17 +728,29 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
               </div>
             )}
 
-            {/* In-flight assistant bubble with streaming state line */}
+            {/* In-flight assistant bubble with streaming state line.
+                Continuation badge appears above when we're mid-conversation
+                AND the tray already has items — signals "I'm answering, and
+                your previous results are still saved". */}
             {streamingState && (
-              <div className="flex justify-start">
+              <div className="flex flex-col items-start">
+                {tray.length > 0 && messages.length > 2 && (
+                  <div className="text-xs text-gray-400 italic mb-1 px-2">
+                    המשך השיחה ↑
+                  </div>
+                )}
                 <div className="bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-sm px-4 py-3">
                   <span className="text-xs text-gray-400 italic">{streamingLabel(streamingState)}</span>
                 </div>
               </div>
             )}
 
-            {/* Loading fallback dots when stream is connecting but no thinking event yet */}
-            {loading && !streamingState && (
+            {/* Loading fallback dots when stream is initiating before any
+                event has arrived. `streamingState` is set synchronously to
+                'thinking' in sendMessage, so this only renders during the brief
+                async gap before React commits that state — useful when the
+                whole stream is delayed (slow network, cold backend). */}
+            {loading && streamingState === null && (
               <div className="flex justify-start">
                 <div className="bg-white border border-gray-100 shadow-sm rounded-2xl rounded-tl-sm px-5 py-3">
                   <span className="inline-flex gap-1 items-center">
@@ -703,7 +828,19 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
             setProfileOpen(false)
             setMessages([WELCOME_MESSAGE(null)])
             setChipStrip([])
-            // Don't auto-clear tray — user might want to keep their accumulated items
+            // Clear the tray on a logged-in user's logout — otherwise items
+            // from a personal session persist for the next person on a shared
+            // device. Anon → anon retention is fine (no identity change).
+            setTray([])
+            try { localStorage.removeItem(TRAY_KEY) } catch { /* ignore */ }
+            // Reset conversational state so the next turn doesn't carry over
+            // stale intent (would falsely trigger the topic-change subtitle)
+            // or hidden suggestion chips.
+            lastIntent.current = null
+            userMessageCount.current = 0
+            setChipsVisible(true)
+            setShowRegPrompt(false)
+            setShowRegForm(false)
           }}
         />
       )}
@@ -735,7 +872,13 @@ function TrayPanel({ items, onClear, mobileOpen, onMobileToggle }: TrayPanelProp
       <div className="flex items-center justify-between px-3 py-2 border-b border-gray-100 shrink-0">
         <button
           className="text-sm font-medium text-gray-700 flex items-center gap-1 md:cursor-default"
-          onClick={onMobileToggle}
+          // Desktop: tray is always visible — match-media check prevents the
+          // click from polluting localStorage.findme_tray_open. The button
+          // remains semantically a button for screen-reader consistency.
+          onClick={() => {
+            if (typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches) return
+            onMobileToggle()
+          }}
         >
           <span>🛒</span>
           <span>שמירה זמנית{count > 0 ? ` (${count})` : ''}</span>

@@ -18,17 +18,36 @@ const BASE = `${API_BASE}/api`
 
 const SESSION_ID_KEY = 'findme_session_id'
 
+// Memoized fallback id for environments where localStorage is unavailable
+// (Safari private mode, non-secure HTTP context, sandboxed iframe). Without
+// this, every call would mint a new UUID and break Redis session bucketing.
+let _inMemorySessionId: string | null = null
+
 export function getOrCreateSessionId(): string {
   try {
     const existing = localStorage.getItem(SESSION_ID_KEY)
     if (existing) return existing
-    const id = (crypto.randomUUID && crypto.randomUUID()) || _fallbackUuid()
+    const id = _safeUuid()
     localStorage.setItem(SESSION_ID_KEY, id)
     return id
   } catch {
-    // Private mode / Safari quirks — return a fresh non-persistent id
-    return _fallbackUuid()
+    // localStorage unavailable: memoize one id at module scope so subsequent
+    // calls within this tab session return the same value.
+    if (_inMemorySessionId === null) _inMemorySessionId = _safeUuid()
+    return _inMemorySessionId
   }
+}
+
+function _safeUuid(): string {
+  // crypto.randomUUID throws in non-secure context. Guard with try.
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID()
+    }
+  } catch {
+    // fall through to manual UUID
+  }
+  return _fallbackUuid()
 }
 
 function _fallbackUuid(): string {
@@ -189,14 +208,23 @@ function _dispatchFrame(frame: string, cb: StreamCallbacks): void {
   let event: string | null = null
   const dataLines: string[] = []
   for (const line of frame.split('\n')) {
-    if (line.startsWith('event:')) event = line.slice(6).trim()
-    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
+    // SSE spec: strip the colon then a single optional leading space — do NOT
+    // trim() the whole line, which would corrupt payloads with leading/trailing
+    // whitespace inside multi-line JSON.
+    if (line.startsWith('event:')) event = _stripOneSpace(line.slice(6))
+    else if (line.startsWith('data:')) dataLines.push(_stripOneSpace(line.slice(5)))
   }
   if (!event || dataLines.length === 0) return
   let payload: unknown
   try {
     payload = JSON.parse(dataLines.join('\n'))
   } catch {
+    // Parse failure on an `error` frame still needs to surface — without this,
+    // a corrupt error event leaves the UI's in-flight bubble stuck until the
+    // 30s safety timer fires.
+    if (event === 'error') {
+      cb.onError?.({ error: 'malformed error event from server' } as StreamError)
+    }
     return
   }
   switch (event) {
@@ -214,6 +242,10 @@ function _dispatchFrame(frame: string, cb: StreamCallbacks): void {
       break
     // partial_content is reserved for future token-level streaming
   }
+}
+
+function _stripOneSpace(s: string): string {
+  return s.startsWith(' ') ? s.slice(1) : s
 }
 
 async function _fallbackToV1(
@@ -235,7 +267,10 @@ async function _fallbackToV1(
       voucher_network: v1.voucher_network,
       search_time_ms: v1.search_time_ms,
       chips: [],
-      trace: { tool_calls: [], iterations: 0, total_latency_ms: 0, total_cost_usd: null, terminated_by: 'content' },
+      // `cost_budget` is the honest terminator — using 'content' would poison
+      // any downstream telemetry that counts the budget-fallback bucket as
+      // normal completion.
+      trace: { tool_calls: [], iterations: 0, total_latency_ms: 0, total_cost_usd: null, terminated_by: 'cost_budget' },
     }
     cb.onFinal(synthesized)
   } catch (err) {

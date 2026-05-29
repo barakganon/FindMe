@@ -38,6 +38,10 @@ from api.schemas import MemoryChip
 logger = logging.getLogger(__name__)
 
 _MAX_CHIPS = 6
+# Strict > 0.5: 0.5 is the schema default ("no real signal"), so a row at exactly
+# 0.5 means inference hasn't actually committed. Chips are an always-visible
+# personalization surface; transparency for low-confidence guesses belongs in the
+# ProfileDrawer, not here.
 _CONFIDENCE_THRESHOLD = 0.5
 
 
@@ -83,14 +87,24 @@ async def _logged_in_chips(user_id: Any, db: AsyncSession) -> list[MemoryChip]:
     inferred_rows = await db.execute(
         select(UserInferredAttribute)
         .where(UserInferredAttribute.user_id == user_id)
-        .where(UserInferredAttribute.confidence >= _CONFIDENCE_THRESHOLD)
+        .where(UserInferredAttribute.confidence > _CONFIDENCE_THRESHOLD)
         .order_by(
             UserInferredAttribute.is_confirmed.desc(),
             UserInferredAttribute.confidence.desc(),
         )
     )
+    attrs = list(inferred_rows.scalars().all())
+
+    # Pre-pass: if both `has_children` and `child_age_range` exist, keep only
+    # the child_age_range row — _inferred_to_chip maps it to the compound chip
+    # (👦 ילד {age}) per AC-3. The generic has_children chip would otherwise
+    # duplicate it (two 👦 chips side by side).
+    has_age_range = any(a.attribute == "child_age_range" for a in attrs)
+    if has_age_range:
+        attrs = [a for a in attrs if a.attribute != "has_children"]
+
     inferred_chips: list[MemoryChip] = []
-    for attr in inferred_rows.scalars().all():
+    for attr in attrs:
         chip = _inferred_to_chip(attr)
         if chip is not None:
             inferred_chips.append(chip)
@@ -228,8 +242,10 @@ def _safe_json_list(raw: str) -> list[str]:
 
 
 def _clean_int_str(value: str) -> str:
-    """Render '300' from '300.0' / 300 / '300' etc. Falls back to original."""
+    """Render '300' from '300.0' / 300 / '300' etc. Rounds (not truncates) so
+    '300.7' shows as '301' — chip shouldn't understate the user's actual budget.
+    Falls back to the original string on any parse failure."""
     try:
-        return str(int(float(value)))
+        return str(round(float(value)))
     except (ValueError, TypeError):
         return str(value)

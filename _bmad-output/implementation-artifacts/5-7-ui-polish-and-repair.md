@@ -408,6 +408,41 @@ stays Hebrew-RTL.
 - [Source: _bmad-output/implementation-artifacts/deferred-work.md — known deferrals]
 - [Source: _bmad-output/project-context.md — frontend + backend rules]
 
+### Review Findings (2026-05-29 multi-agent adversarial review)
+
+**Decision needed (resolved 2026-05-29):**
+
+- [x] [Review][Decision][A] Inferred-attribute confidence threshold conflict — chose option A: tighten chips to `> 0.5` (privacy-strict). Aligns chips with the chip strip's "always-visible personalization surface" role; transparency for low-confidence guesses lives in the ProfileDrawer instead. Applied as a patch.
+- [x] [Review][Decision][C] Anon → logged-in transition orphans `derived_facts` — chose option C: defer. Migrating Redis state across the auth boundary touches `/auth/import-session` + frontend session-id transmission + race handling, which is out of scope for a UI story. Appended to `deferred-work.md`.
+
+**Patches:**
+
+- [x] [Review][Patch] 30s safety timer is broken three ways: no `clearTimeout` on success/error, `onError` never sets `receivedFinal=true`, `loading` closure is stale [`frontend/src/components/ChatInterface.tsx` `sendMessage()`]
+- [x] [Review][Patch] 200ms `settleFinal` timer never cleared — interleaved sends graft prior turn onto new conversation [`ChatInterface.tsx` `onFinal` callback]
+- [x] [Review][Patch] Tray dedup fallback `${storeId}:${canonicalName}` is always truthy → variant products collapse to one tray slot [`ChatInterface.tsx` `mergeIntoTray()` ~line 1003]
+- [x] [Review][Patch] Component unmount during stream → stale `setMessages` runs against post-logout state; no `useEffect` cleanup cancels the handle [`ChatInterface.tsx` `sendMessage()`]
+- [x] [Review][Patch] `final.intent === 'error'` cascades phantom topic-change subtitle on error bubbles and into the next successful turn [`ChatInterface.tsx` `onFinal` `topicChanged` calc]
+- [x] [Review][Patch] AC-3 violation: `has_children=true` + `child_age_range` both render — duplicate 👦 chips. Spec required a single compound chip [`api/agent/chips.py` `_inferred_to_chip()`]
+- [x] [Review][Patch] AC-4 violation: continuation badge `המשך השיחה ↑` not implemented [`ChatInterface.tsx` in-flight bubble]
+- [x] [Review][Patch] SSE `data:` line `.trim()` corrupts multi-line JSON payloads — spec strips only one leading space [`frontend/src/api.ts` `_dispatchFrame()`]
+- [x] [Review][Patch] `_fallbackToV1` synthesizes `trace.terminated_by: 'content'` → telemetry treats budget fallbacks as zero-cost content-terminated turns. Either widen the enum to include `'fallback'` or use `'cost_budget'` [`frontend/src/api.ts` `_fallbackToV1()`]
+- [x] [Review][Patch] `getOrCreateSessionId()` returns a fresh UUID per call in Safari private mode / non-secure context — breaks single-source contract; Redis bucketing fails silently [`frontend/src/api.ts`]
+- [x] [Review][Patch] Chip `source` field leaks raw user message text as a `title=` tooltip on every chip — privacy regression [`frontend/src/components/ChatInterface.tsx` chip strip `<span title={chip.source}>`]
+- [x] [Review][Patch] `messages.slice(-10)` history sent to backend includes prior error bubbles — agent sees its own "מצטער, אירעה שגיאה…" as prior assistant turns [`ChatInterface.tsx` `sendMessage()`]
+- [x] [Review][Patch] GPS resend uses `lastMessage` (most recently sent text), not the message the needs_location bubble belongs to — interleaved sends resend the wrong message [`ChatInterface.tsx` `requestGPS()` callsite]
+- [x] [Review][Patch] `localStorage.findme_tray` has no schema version — drift will crash `<ResultCard result={undefined}>` for existing users on next deploy [`ChatInterface.tsx` `loadTray()`]
+- [x] [Review][Patch] Tray persists across user logout — privacy leak on shared devices. Clear on logout for logged-in users (anon→anon retention is fine) [`ChatInterface.tsx` `onLogout` handler]
+- [x] [Review][Patch] Loading-dots branch (`loading && !streamingState`) is dead code — `streamingState='thinking'` is set in the same render as `loading=true` [`ChatInterface.tsx` JSX]
+- [x] [Review][Patch] `_clean_int_str` truncates instead of rounds — `default_max_price="300.7"` displays as `₪300` [`api/agent/chips.py`]
+- [x] [Review][Patch] Tray header `<button>` fires `onMobileToggle` on desktop too; `localStorage.findme_tray_open` writes occur unnecessarily [`ChatInterface.tsx` `TrayPanel`]
+
+**Deferred (real but not blocking this PR):**
+
+- [x] [Review][Defer] `tests/api/test_chips.py` 6-cap test only feeds 7 chips — would pass at 5 or 7 [`tests/api/test_chips.py`] — deferred, test-coverage gap not a code bug
+- [x] [Review][Defer] No test asserts confidence-desc ordering of unconfirmed chips [`tests/api/test_chips.py`] — deferred, behavior is correct in `chips.py` via `order_by(confidence.desc())`
+- [x] [Review][Defer] `MemoryChip.kind` is free `str`, not `Literal` — type-strictness only [`api/schemas.py`] — deferred, no runtime risk
+- [x] [Review][Defer] `_dispatchFrame` silently drops `partial_content` events — future-proofing if backend ever streams tokens [`frontend/src/api.ts`] — deferred, current backend doesn't emit them
+
 ## Dev Agent Record
 
 ### Agent Model Used
