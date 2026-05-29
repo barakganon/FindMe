@@ -90,6 +90,9 @@ async def test_stream_emits_thinking_then_tool_call_then_final(monkeypatch, over
     final = next(e for e in events if e["event"] == "final")
     assert final["data"]["message"] == "מצאתי 5 אוזניות סוני."
     assert final["data"]["intent"] == "product_search"
+    # W7: final must include a `chips` field (anon, no derived facts pre-turn → may be populated from this turn)
+    assert "chips" in final["data"]
+    assert isinstance(final["data"]["chips"], list)
 
 
 @pytest.mark.anyio

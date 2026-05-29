@@ -181,3 +181,123 @@ async def test_save_serializes_pydantic_results():
     payload = json.loads(call.args[2])
     assert payload["last_product_results"][0]["canonical_name"] == "Sony XM5"
     assert payload["last_product_results"][0]["price"] == 1299.0
+
+
+# ---------------------------------------------------------------------------
+# W7 — derived_facts extraction from tool_calls
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_derived_facts_extracted_from_tool_calls():
+    """save_session_state pulls city/brand/max_price from tool args."""
+    redis = AsyncMock()
+    redis.get = AsyncMock(return_value=None)  # no prior state
+    redis.setex = AsyncMock()
+
+    tool_calls = [
+        SimpleNamespace(name="search_products", args={"brand": "סוני", "max_price": 300}),
+        SimpleNamespace(name="search_stores", args={"city": "תל אביב"}),
+    ]
+
+    await save_session_state(
+        redis, "anon:abc",
+        product_results=[], store_results=[],
+        user_message="אוזניות סוני עד 300", assistant_message="מצאתי",
+        tool_calls=tool_calls,
+    )
+    payload = json.loads(redis.setex.call_args.args[2])
+    assert payload["derived_facts"] == {
+        "brand": "סוני",
+        "max_price": "300",
+        "city": "תל אביב",
+    }
+
+
+@pytest.mark.anyio
+async def test_derived_facts_newer_turn_overwrites_older():
+    """Idempotent overwrite — newer city wins, prior brand survives if no new brand."""
+    redis = AsyncMock()
+    prior = {
+        "last_product_results": [], "last_store_results": [],
+        "last_user_message": "old", "last_assistant_message": "old",
+        "updated_at": "2026-05-28T10:00:00+00:00",
+        "derived_facts": {"city": "אילת", "brand": "Sony"},
+    }
+    redis.get = AsyncMock(return_value=json.dumps(prior, ensure_ascii=False))
+    redis.setex = AsyncMock()
+
+    tool_calls = [
+        SimpleNamespace(name="search_stores", args={"city": "תל אביב"}),
+    ]
+
+    await save_session_state(
+        redis, "anon:abc",
+        product_results=[], store_results=[],
+        user_message="מסעדות בתל אביב", assistant_message="...",
+        tool_calls=tool_calls,
+    )
+    payload = json.loads(redis.setex.call_args.args[2])
+    # New city overwrites
+    assert payload["derived_facts"]["city"] == "תל אביב"
+    # Brand untouched — no new brand in this turn
+    assert payload["derived_facts"]["brand"] == "Sony"
+
+
+@pytest.mark.anyio
+async def test_derived_facts_no_tool_calls_preserves_prior():
+    """Calling save_session_state without tool_calls leaves prior facts intact."""
+    redis = AsyncMock()
+    prior = {
+        "last_product_results": [], "last_store_results": [],
+        "last_user_message": "x", "last_assistant_message": "y",
+        "updated_at": "2026-05-28T10:00:00+00:00",
+        "derived_facts": {"city": "אילת"},
+    }
+    redis.get = AsyncMock(return_value=json.dumps(prior, ensure_ascii=False))
+    redis.setex = AsyncMock()
+
+    await save_session_state(
+        redis, "anon:abc",
+        product_results=[], store_results=[],
+        user_message="x", assistant_message="y",
+    )
+    payload = json.loads(redis.setex.call_args.args[2])
+    assert payload["derived_facts"] == {"city": "אילת"}
+
+
+@pytest.mark.anyio
+async def test_derived_facts_dict_form_tool_calls_also_supported():
+    """Tool calls passed as dicts (defensive) extract the same facts."""
+    redis = AsyncMock()
+    redis.get = AsyncMock(return_value=None)
+    redis.setex = AsyncMock()
+
+    tool_calls = [
+        {"name": "search_products", "args": {"max_price": 500}},
+    ]
+
+    await save_session_state(
+        redis, "anon:abc",
+        product_results=[], store_results=[],
+        user_message="x", assistant_message="y",
+        tool_calls=tool_calls,
+    )
+    payload = json.loads(redis.setex.call_args.args[2])
+    assert payload["derived_facts"]["max_price"] == "500"
+
+
+@pytest.mark.anyio
+async def test_load_reads_derived_facts_field():
+    """load_session_state populates SessionState.derived_facts from Redis JSON."""
+    redis = AsyncMock()
+    stored = {
+        "last_product_results": [], "last_store_results": [],
+        "last_user_message": "", "last_assistant_message": "",
+        "updated_at": "2026-05-28T10:00:00+00:00",
+        "derived_facts": {"city": "חיפה", "brand": "LG"},
+    }
+    redis.get = AsyncMock(return_value=json.dumps(stored, ensure_ascii=False))
+
+    state = await load_session_state(redis, "user:abc")
+    assert state.derived_facts == {"city": "חיפה", "brand": "LG"}
