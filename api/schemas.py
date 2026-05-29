@@ -288,6 +288,35 @@ class ToolCallTrace(BaseModel):
     )
 
 
+class MemoryChip(BaseModel):
+    """A single chip in the memory-chip strip above the chat column (W7).
+
+    Surfaces personalization signals (explicit preferences, confirmed/unconfirmed
+    inferred attributes, anonymous-session derived facts) so the user can see —
+    and trust — what FindMe believes about them at a glance.
+
+    Visual treatment differs by `confirmed` (rendered with stronger ring).
+    Ordering and 6-chip cap are applied in `api/agent/chips.build_chips`.
+    """
+
+    icon: str = Field(..., description="Emoji glyph, e.g. '👦', '💰', '📍'")
+    label: str = Field(..., description="Short Hebrew label, e.g. 'ילד 3', '₪300', 'תל אביב'")
+    kind: str = Field(
+        ...,
+        description="'preference' | 'inferred' | 'session' — source category for styling/debug",
+    )
+    confirmed: bool = Field(
+        False,
+        description=(
+            "True when this chip mirrors a UserInferredAttribute with is_confirmed=True. "
+            "Frontend renders confirmed chips with extra emphasis."
+        ),
+    )
+    source: Optional[str] = Field(
+        None, description="Original message or value that triggered this chip (debug surface)"
+    )
+
+
 class AgentTrace(BaseModel):
     """Trace of one agentic turn — exposed via ChatResponseV2 for eval scoring."""
 
@@ -327,4 +356,13 @@ class ChatResponseV2(BaseModel):
     location_prompt: Optional[str] = Field(None, description="Hebrew prompt for location")
     voucher_network: str = Field("buyme", description="Active voucher network")
     search_time_ms: float = Field(0.0, ge=0.0, description="Total server-side time in ms")
+    chips: list[MemoryChip] = Field(
+        default_factory=list,
+        description=(
+            "Active memory chips for the strip above the chat column (W7). "
+            "Empty for anonymous users with no derived facts; up to 6 chips otherwise. "
+            "Ordering: preferences → confirmed inferred → unconfirmed inferred (high→low confidence) "
+            "→ anonymous session-derived facts."
+        ),
+    )
     trace: AgentTrace = Field(..., description="Agent trace for eval + debugging")
