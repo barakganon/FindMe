@@ -1,6 +1,6 @@
 # Story 5.8: Test Rewrite Around Tools (W8)
 
-Status: ready-for-dev
+Status: review
 
 > **Source:** [findme-v2-sprint-plan.md](../planning-artifacts/findme-v2-sprint-plan.md) — Week 8.
 > The v2 agentic refactor (W2–W7) built five tools (`search_products`, `search_stores`,
@@ -191,24 +191,24 @@ This codifies the W8 contract so future tools don't ship without coverage.
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 (AC-7):** add `redis_mock` to `tests/conftest.py`; create `tests/api/conftest.py`
+- [x] **Task 1 (AC-7):** add `redis_mock` to `tests/conftest.py`; create `tests/api/conftest.py`
       with `tool_context`, `mock_db`, `app_client` fixtures. Test that fixtures resolve cleanly
       (no-op test file or use in Task 2).
-- [ ] **Task 2 (AC-1):** create `tests/api/test_tool_search_products.py` with ≥ 8 tests covering
+- [x] **Task 2 (AC-1):** create `tests/api/test_tool_search_products.py` with ≥ 8 tests covering
       Hebrew + English happy paths, brand re-rank, max_price, online_only ordering, location,
       empty, error, result cap.
-- [ ] **Task 3 (AC-2):** create `tests/api/test_tool_search_stores.py` with ≥ 6 tests covering
+- [x] **Task 3 (AC-2):** create `tests/api/test_tool_search_stores.py` with ≥ 6 tests covering
       restaurant + retail paths, location-required clarification, pagination, empty, error.
-- [ ] **Task 4 (AC-3):** create `tests/api/test_tool_get_user_context.py` with ≥ 5 tests.
-- [ ] **Task 5 (AC-4):** create `tests/api/test_tool_recall_history.py` with ≥ 5 tests.
-- [ ] **Task 6 (AC-5):** create `tests/api/test_tool_clarify.py` with ≥ 3 tests.
-- [ ] **Task 7 (AC-6):** extend `tests/api/test_chat_v2_stream.py` with ≥ 6 SSE/session-id cases.
-- [ ] **Task 8 (AC-8):** refactor `.github/workflows/eval-nightly.yml` to skip cleanly without
+- [x] **Task 4 (AC-3):** create `tests/api/test_tool_get_user_context.py` with ≥ 5 tests.
+- [x] **Task 5 (AC-4):** create `tests/api/test_tool_recall_history.py` with ≥ 5 tests.
+- [x] **Task 6 (AC-5):** create `tests/api/test_tool_clarify.py` with ≥ 3 tests.
+- [x] **Task 7 (AC-6):** extend `tests/api/test_chat_v2_stream.py` with ≥ 6 SSE/session-id cases.
+- [x] **Task 8 (AC-8):** refactor `.github/workflows/eval-nightly.yml` to skip cleanly without
       `EVAL_BASE_URL` — no more nightly failure emails.
-- [ ] **Task 9 (AC-9):** run `pytest tests/` locally; confirm ≥ 187 tests pass. Check CI on the PR.
-- [ ] **Task 10 (AC-10):** append the new-tool-needs-tests rule to
+- [x] **Task 9 (AC-9):** run `pytest tests/` locally; confirm ≥ 187 tests pass. Check CI on the PR.
+- [x] **Task 10 (AC-10):** append the new-tool-needs-tests rule to
       `_bmad-output/project-context.md` under Testing Rules.
-- [ ] **Task 11:** Story → review, sprint-status updated, commits on
+- [x] **Task 11:** Story → review, sprint-status updated, commits on
       `feature/w8-test-rewrite`, PR opened.
 
 ## Dev Notes
@@ -476,13 +476,51 @@ small (5 tests each is the right shape, not a target ceiling), so don't pad them
 
 ### Agent Model Used
 
-_To be filled by dev agent._
+Claude Opus 4.7 (1M context)
 
 ### Debug Log References
 
+- `pytest tests/` → 188 passed, 10 warnings in 6.96s (target ≥187, met +1)
+- Branch baseline: 141 tests on `feature/w7-ui-polish-and-repair` (chips wiring depends on W7)
+- Net new tests: 47 (47 = 188 − 141)
+
 ### Completion Notes List
 
+- **Branched off `feature/w7-ui-polish-and-repair`** rather than master because AC-6 chips-on-stream
+  tests depend on the W7 chips wiring in `chat_v2_stream.py`. Merge order will be PR#8 (W7) → master
+  first, then PR#9 (W8) → master. Stacked PR.
+- **Mock patch target correction:** `_run_product_search` and `_run_store_search` are lazy-imported
+  inside the tool executors, so the attribute does not exist on `api.agent.tools.*` modules. Mocks
+  patch the source — `api.routes.chat._run_product_search` — instead. Documented in test file docstrings.
+- **Test count per file:** AC-1 = 10, AC-2 = 11, AC-3 = 7, AC-4 = 6, AC-5 = 5, AC-6 extension = 8
+  (4 W5 + 8 W8) = 47 new direct-tool/stream tests.
+- **AC-3 confidence boundary:** verified at the Python level using a mock that simulates the
+  SQL `confidence >= 0.5` filter — a 0.5 row IS in the mock result, 0.499 row is NOT. Documented
+  in test docstring.
+- **AC-6 UTF-8 reassembly:** documented in test module docstring as frontend `TextDecoder({stream:true})`
+  territory; backend emits one full UTF-8 frame per event so the contract is implicitly safe Python-side.
+- **AC-8:** eval-nightly skip uses `::notice::` annotation + step-output gate so subsequent steps
+  conditionally skip; the workflow concludes successfully.
+- **AC-10:** new-tool-needs-tests rule appended to project-context.md Testing Rules; testing-patterns
+  paragraph appended to `tests/eval/rubric.md`.
+
 ### File List
+
+**New:**
+- `tests/api/conftest.py` — API-scoped fixtures (mock_db, tool_context, app_client, make_db_result, make_user)
+- `tests/api/test_tool_search_products.py` — 10 tests (AC-1)
+- `tests/api/test_tool_search_stores.py` — 11 tests (AC-2)
+- `tests/api/test_tool_get_user_context.py` — 7 tests (AC-3)
+- `tests/api/test_tool_recall_history.py` — 6 tests (AC-4)
+- `tests/api/test_tool_clarify.py` — 5 tests (AC-5)
+
+**Modified:**
+- `tests/conftest.py` — added `redis_mock` AsyncMock fixture (AC-7)
+- `tests/api/test_chat_v2_stream.py` — +8 tests for SSE frame format, multi-tool, chips, session-id (AC-6)
+- `.github/workflows/eval-nightly.yml` — skip cleanly when `EVAL_BASE_URL` is unset (AC-8)
+- `_bmad-output/project-context.md` — appended new-tool-needs-tests rule under Testing Rules (AC-10)
+- `tests/eval/rubric.md` — appended "Testing patterns (W8)" paragraph (AC-9 doc)
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` — 5-8 status flipped to in-progress → review
 
 ## Change Log
 
@@ -490,3 +528,4 @@ _To be filled by dev agent._
 |---|---|
 | 2026-05-30 | Story created from v2 sprint plan W8 |
 | 2026-05-30 | Validation pass: corrected AC-2/4/5 against actual tool surface (clarify has no kind dispatch; recall_history has no reference param; search_stores has no GPS-clarification path and no page param). Added AC-1 cap caveat and AC-3 confidence-boundary tests. |
+| 2026-05-30 | Implementation complete: 47 new tests across 6 files; full suite 188/188 passing. Branch stacked on `feature/w7-ui-polish-and-repair` for AC-6 chips access. Story → review. |
