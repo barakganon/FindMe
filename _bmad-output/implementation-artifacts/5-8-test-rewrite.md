@@ -25,7 +25,7 @@ Status: ready-for-dev
   for API-scoped fixtures) so tool tests don't each rewrite mock setup
 - Eval-nightly workflow refactored to skip cleanly when `EVAL_BASE_URL` is unset
   (currently fails noisily; the actual eval should be opt-in until we deploy)
-- Test count target: **≥ 180 total** (was 141, so ≥ 39 new/rewritten)
+- Test count target: **≥ 187 total** (was 141, so ≥ 46 new/rewritten — see Dev Notes for per-AC math)
 - CI passes on every PR with the new tests
 
 **Out of scope (defer):**
@@ -44,36 +44,37 @@ Status: ready-for-dev
 
 ### AC-1: `tests/api/test_tool_search_products.py`
 
-New file. ≥ 8 tests covering `execute_search_products` directly:
+New file. ≥ 9 tests covering `execute_search_products` directly. Mock the lazy import at `api.agent.tools.search_products._run_product_search` — no real DB, no Gemini. Tool kwargs are `db`, `api_key`, and `location` only (any other context keys are absorbed by `**_unused`). Empty results yield the Hebrew summary `"לא נמצאו תוצאות מתאימות."`; non-empty yields `"נמצאו {N} תוצאות. הראשונה: {canonical_name}{ (brand)}."`.
 
-- Hebrew query → returns shaped results (mock `_run_product_search` to return fixtures)
-- English query → same path, with English filter values
-- Brand re-rank applied: when `params.brand` set, brand-matching items sort first;
-  non-matching items follow in original similarity order; `brand=None` items sort last
-  (mirrors the W6 contract from `5-6-prompt-iteration.md`)
-- `params.max_price` honored and passed through to `_run_product_search`
-- `params.online_only=True` filters out non-online stores **BEFORE** the `limit` slice
-- `params.location` (lat/lng) propagated to the search filter
-- Empty results → `(items=[], summary="לא מצאתי…")` shape
-- Embedding/SQL exception → returns `(items=[], summary="<error>")` not raised
-- Result-count cap respected (the tool description says ≤ 6 items; verify slicing)
+- Hebrew brand+query happy path: `query="אוזניות", brand="סוני"` → `search_text` passed to `_run_product_search` is `"סוני אוזניות"` (brand prefixed), `parsed.brand` / `parsed.product_query` / `parsed.max_price` / `parsed.city` propagated, results returned with the Hebrew count-and-first-result summary.
+- English happy path: `query="headphones", brand="Sony", max_price=500, city="Tel Aviv"` → same shape; `parsed.max_price=500.0` and `parsed.city="Tel Aviv"` forwarded.
+- No params (both `query=None` and `brand=None`) short-circuits BEFORE calling `_run_product_search` and returns `([], "לא הועברו פרמטרי חיפוש.")`.
+- Brand re-rank — three tiers, stable: mock returns mixed `[brand="Sony", brand="Bose", brand=None, brand="sony pro", brand=""]` in that order with `params.brand="Sony"`. Result order is `Sony, sony pro, Bose, None, ""` (case-insensitive substring matches first; then non-matching truthy brands; then None/empty last; within-tier original order preserved).
+- Brand re-rank skipped when `brand=None`: mock returns 3 results, output order is identical to mock order.
+- `online_only=True` filters BEFORE the `limit` slice: mock returns 7 results where `results[i].store.is_online` alternates True/False (4 online, 3 offline) and `limit=3` → exactly 3 online results returned (not 3 of the original 7 filtered to 1 online).
+- `online_only=False` (default) keeps non-online stores in the output.
+- `limit` slicing: mock returns 8 results, `limit=5` → 5 results returned in their post-rerank order.
+- Internal cap caveat: `_run_product_search` itself returns at most `_CHAT_PAGE_SIZE` (10) per `api/routes/chat.py:60`. When the mock honors that cap and 8 of 10 are physical with `online_only=True, limit=10`, the tool returns 2 — fewer than `params.limit`. Test asserts the tool does NOT attempt to re-page or fetch more; it slices what `_run_product_search` gave it.
+- `location` kwarg propagated: pass a `LocationFilter(lat=32.08, lng=34.78, radius_km=5)` into the call; assert `_run_product_search` received it as the `location` kwarg unchanged. (`location` is a tool-context kwarg, NOT a `SearchProductsParams` field.)
 
-Each test mocks `_run_product_search` directly (it's the only external call) — no DB,
-no Gemini. Reference: `api/agent/tools/search_products.py:149 execute_search_products`.
+Reference: `api/agent/tools/search_products.py:149 execute_search_products`.
 
-### AC-2: `tests/api/test_tool_search_stores.py`
+### AC-2: search_stores tool wraps `_run_store_search` with city-synonym expansion
 
-New file. ≥ 6 tests covering `execute_search_stores`:
+The store search tool's public surface is the `SearchStoresParams` model (`query`, `city`, `store_type`, `online_only`, `limit` with `ge=1, le=20, default=10`) plus `execute_search_stores(params, *, db, location=None, **_unused)`. There is no pagination, no GPS/clarification branch (the tool description tells the LLM to call `clarify` for "near me" instead — that's an LLM concern, not testable here), and no fan-out beyond the city-synonym expansion. Tests mock `api.routes.chat._run_store_search` and exercise the merge/dedupe/filter/summary branches.
 
-- `store_type='restaurant'` query with GPS → returns nearby stores with `distance_km`
-- `store_type='retail'` query with city filter → returns stores in city
-- Missing GPS + "lidi"-style location_hint → returns location-required clarification
-  (`(items=[], summary="<location-needed>")`)
-- Pagination: `params.page=2` retrieves the second page
-- Empty store-list → graceful empty result
-- DB error → graceful empty result, no raise
+- **Single-city expansion (Tel Aviv)** — `params.city='תל אביב'` calls `_run_store_search` once per element of `expand_city('תל אביב')` (3 entries: original + 2 TLV buckets), passing a `ParsedIntent(intent='store_search', product_query=params.query, city=<each>, store_type=params.store_type)` and the supplied `location`. Verify call count, distinct `city=` per call, and that `params.query` + `store_type` propagate.
+- **No-city branch** — `params.city=None` invokes `_run_store_search` exactly once with `parsed.city=None` (the function uses `[None]` when no city is given); results are returned as-is.
+- **Dedupe by `id`** — when two bucket batches share a `StoreResult` with the same `id`, the merged list contains it only once and preserves first-seen order.
+- **Online-only filter** — with `online_only=True`, any `StoreResult` where `is_online` is False is dropped from the final results.
+- **`limit` truncation** — when merged results exceed `params.limit`, output is sliced to `params.limit` (default 10, hard bounds 1-20 enforced by Pydantic).
+- **Early-stop heuristic** — once `len(merged) >= params.limit * 3`, the loop breaks before exhausting `cities_to_try`; assert `_run_store_search` was not called for the remaining expansions.
+- **Per-bucket exception is swallowed** — if `_run_store_search` raises on one bucket, the loop continues with the next bucket and returns whatever the surviving calls produced (no exception escapes the tool).
+- **Empty-result summary** — when no stores match, returns `([], "לא נמצאו חנויות מתאימות.")`.
+- **Non-empty summary** — with results, summary is `f"נמצאו {len(results)} חנויות. הראשונה: {top.name_he} ב-{top.city}."` (the `" ב-{city}"` segment is omitted when `top.city` is falsy).
+- **Unknown city pass-through** — `params.city='Nowheresville'` triggers exactly one `_run_store_search` call with `parsed.city='Nowheresville'` (matches `expand_city` fallback behavior).
 
-Reference: `api/agent/tools/search_stores.py:91 execute_search_stores`.
+Reference: `api/agent/tools/search_stores.py:91`
 
 ### AC-3: `tests/api/test_tool_get_user_context.py`
 
@@ -86,30 +87,33 @@ New file. ≥ 5 tests covering `execute_get_user_context`:
   are EXCLUDED
 - Logged-in user with both prefs + inferred → both appear in summary, prefs first
 - DB error → graceful `(items=[], summary="מידע משתמש לא זמין")`
+- A row with confidence=0.5 IS INCLUDED (the tool uses `>= 0.5`, deliberately different from chips' `> 0.5`); a row with confidence=0.499 is EXCLUDED.
 
 Reference: `api/agent/tools/get_user_context.py:55 execute_get_user_context`.
 
-### AC-4: `tests/api/test_tool_recall_history.py`
+### AC-4: recall_history returns prior turn's tray from session_state
 
-New file. ≥ 5 tests covering `execute_recall_history`:
+Validate that `execute_recall_history` reads `last_product_results`, `last_store_results`, and `last_user_message` off the `session_state` kwarg and serializes them into a JSON summary payload. The tool itself does NOT resolve ordinal/name references — picking "the first one" or "Sony XM5" out of the recalled tray is the LLM's job once it sees the JSON. The tool only has one input field, `turn_offset`, constrained to exactly 1 (ge=1, le=1).
 
-- Empty `session_state` → returns empty result with "no prior turns" summary
-- `reference='הראשון'` / `'first one'` → returns the first item from `last_product_results`
-- `reference='השני'` / `'second'` → returns the second item
-- Name-based recall: `reference='Sony XM5'` → matches by `canonical_name` substring
-- No match → empty result, no raise
+- Test that calling `execute_recall_history(RecallHistoryParams(), session_state=None)` returns `([], "אין היסטוריה זמינה — סשן חדש")`.
+- Test that when `session_state` is provided but `last_product_results` and `last_store_results` are both empty/None, the tool returns `([], "אין היסטוריה זמינה — לא בוצעו חיפושים קודמים")`.
+- Test that with non-empty `last_product_results` (e.g. 3 product dicts) and `last_user_message="אוזניות סוני"`, the summary is valid JSON containing `previous_user_message`, `previous_product_count=3`, `previous_store_count=0`, `previous_products` (the items), and `previous_stores=[]`; items list is `[]`.
+- Test that when `last_product_results` has more than 5 items, only the first 5 are included in `previous_products` (bounded payload) while `previous_product_count` reflects the full length.
+- Test that `RecallHistoryParams` rejects `turn_offset=0` and `turn_offset=2` (Pydantic ValidationError) because the field is constrained `ge=1, le=1`.
 
-Reference: `api/agent/tools/recall_history.py:55 execute_recall_history`.
+Reference: api/agent/tools/recall_history.py:55-89
 
-### AC-5: `tests/api/test_tool_clarify.py`
+### AC-5: clarify tool captures the question verbatim into the trace
 
-New file. ≥ 3 tests covering `execute_clarify`:
+`execute_clarify` is a pure pass-through: it accepts a `ClarifyParams` with a single required field `question: str` (min_length=1, max_length=300) and returns `(items=[], summary=params.question)`. There is no `kind` discriminator, no branching on question type, and no recall/search behavior — the tool's only job is to record the Hebrew question so `_infer_intent` can map the turn to `intent="clarify"`. Tests must exercise the schema validation and the return contract, not invented dispatch logic.
 
-- `kind='location'` → returns location-clarification summary in Hebrew
-- `kind='ambiguous'` with `question` → returns the question verbatim
-- Invalid `kind` → returns a generic clarification, never raises
+- Happy path: call `execute_clarify(ClarifyParams(question="מהיכן אתה?"))` and assert it returns `([], "מהיכן אתה?")` — the summary is the question verbatim.
+- Long question (within bounds): a 300-character Hebrew question is accepted and echoed back unchanged in the summary.
+- Empty question rejected: constructing `ClarifyParams(question="")` raises `pydantic.ValidationError` (min_length=1).
+- Over-length question rejected: constructing `ClarifyParams(question="א" * 301)` raises `pydantic.ValidationError` (max_length=300).
+- Extra kwargs ignored: `execute_clarify(params, tool_context={"foo": "bar"}, anything_else=123)` still returns `([], params.question)` — `**_unused` swallows everything.
 
-Reference: `api/agent/tools/clarify.py:68 execute_clarify`.
+Reference: `api/agent/tools/clarify.py:68-79` (`execute_clarify`), `api/agent/tools/clarify.py:20-32` (`ClarifyParams`).
 
 ### AC-6: Expanded `tests/api/test_chat_v2_stream.py`
 
@@ -167,7 +171,7 @@ failure emails.
 
 ### AC-9: Test count + CI green
 
-- After this story merges, `pytest tests/` reports **≥ 180 tests, all passing**
+- After this story merges, `pytest tests/` reports **≥ 187 tests, all passing**
 - The CI test job in `.github/workflows/ci.yml` completes ≤ 5 minutes
 - No new dependencies added (everything mockable with `unittest.mock`)
 - Document the new fixture surface in a top-of-file docstring in each new file
@@ -201,7 +205,7 @@ This codifies the W8 contract so future tools don't ship without coverage.
 - [ ] **Task 7 (AC-6):** extend `tests/api/test_chat_v2_stream.py` with ≥ 6 SSE/session-id cases.
 - [ ] **Task 8 (AC-8):** refactor `.github/workflows/eval-nightly.yml` to skip cleanly without
       `EVAL_BASE_URL` — no more nightly failure emails.
-- [ ] **Task 9 (AC-9):** run `pytest tests/` locally; confirm ≥ 180 tests pass. Check CI on the PR.
+- [ ] **Task 9 (AC-9):** run `pytest tests/` locally; confirm ≥ 187 tests pass. Check CI on the PR.
 - [ ] **Task 10 (AC-10):** append the new-tool-needs-tests rule to
       `_bmad-output/project-context.md` under Testing Rules.
 - [ ] **Task 11:** Story → review, sprint-status updated, commits on
@@ -242,14 +246,22 @@ call. The `**_unused` swallow means extra keys in `tool_context` are fine.
   not at the chat-route source.
 - Has a 3-tier brand re-rank (W6): brand-match first, other-brand second, no-brand last.
   Tests must mock `_run_product_search` to return mixed `brand` fields and assert order.
-- `online_only` filter is applied BEFORE the `limit` slice — this is a real W3 deferred-work
-  item ("online_only filter applied before slicing to `limit`"). A test must exercise the
-  ordering (return 10 results, 7 online + 3 offline, `online_only=True`, `limit=5` → 5 online).
+- `online_only` filter is applied BEFORE the `params.limit` slice, but AFTER `_run_product_search`
+  has already capped its return to `_CHAT_PAGE_SIZE=10` (api/routes/chat.py:60). Tests must use
+  mocks that honor that cap and assert the tool does NOT re-page. A test must exercise the
+  ordering with a smaller candidate set so the per-result filter shows: e.g. 7 results, 4 online
+  / 3 offline, `online_only=True`, `limit=3` → 3 online; AND a second test where
+  `_run_product_search` capped at 10 returns only 2 online with `limit=10` → 2 results,
+  proving the tool does not retry.
 
 **`search_stores`:**
-- "Near me" without GPS triggers a clarification path (returns location-needed). Test for
-  both: with GPS → search runs; without GPS → clarification summary.
-- The store query builder is imported from `api.routes.stores` — mock it the same way.
+- No internal GPS-clarify branch exists in `execute_search_stores`. The tool's text description
+  instructs the LLM to call the separate `clarify` tool for "near me" inputs, but the executor
+  itself has no location-required code path. Do not write a test for it.
+- No pagination — only `limit: int` (default 10, ge=1, le=20). No `page` parameter.
+- The store query builder is imported from `api.routes.chat` (specifically `_run_store_search`);
+  city expansion via `normalization.city_synonyms.expand_city`. Mock at
+  `api.agent.tools.search_stores._run_store_search`.
 
 **`get_user_context`:**
 - Imports `UserPreference`, `UserInferredAttribute`, `UserVoucherCard`, `UserSearchHistory`
@@ -262,14 +274,22 @@ call. The `**_unused` swallow means extra keys in `tool_context` are fine.
   is internal LLM context. Don't change either threshold from this story.
 
 **`recall_history`:**
-- Reads `session_state.last_product_results` and `last_store_results` (W3). When both
-  are empty, returns a "no prior turns" summary.
-- Ordinal references ("first", "הראשון", "1") and name-substring references both supported.
-  Coverage for each.
+- Reads `session_state.last_product_results`, `last_store_results`, and `last_user_message`
+  (W3). The only param is `turn_offset: int` (Pydantic `ge=1, le=1` — only the previous turn
+  is recallable). Three branches: (a) `session_state is None` → fixed Hebrew message; (b)
+  both trays empty/None → second fixed Hebrew message; (c) populated → JSON payload with
+  `previous_user_message`, `previous_product_count`, `previous_store_count`, plus
+  `previous_products[:5]` and `previous_stores[:5]`.
+- The tool does NOT resolve ordinal/name references. Picking "the first one" or "Sony XM5"
+  out of the recalled tray is the LLM's job once it sees the JSON payload. Do not write
+  tests for ordinal/substring resolution at the tool layer.
+- Import path: `from api.agent.tools.recall_history import execute_recall_history, RecallHistoryParams`.
 
 **`clarify`:**
 - Smallest tool (~80 lines). Doesn't touch DB. Pure function over `params`.
-- `kind` discriminator: `'location'`, `'ambiguous'`, plus a generic fallback. Test each.
+- `ClarifyParams` has a single field `question: str` (min_length=1, max_length=300). There is
+  NO `kind` discriminator; the executor always returns `([], params.question)` verbatim.
+- Import path: `from api.agent.tools.clarify import ClarifyParams, execute_clarify`.
 
 ### Fixture sketch (`tests/api/conftest.py`)
 
@@ -409,21 +429,23 @@ The `::notice::` annotation surfaces in the Actions UI without marking the run f
 
 ### Test count target math
 
-Current: **141 collected** (`pytest tests/` head row). Target: **≥ 180**.
+Current: **141 collected** (`pytest tests/` head row). Target: **≥ 187** (a realistic
+floor — see math below — with headroom for fixture sanity tests).
 
 | File | New / target | Source |
 |---|---|---|
-| `test_tool_search_products.py` | ≥ 8 new | AC-1 |
-| `test_tool_search_stores.py` | ≥ 6 new | AC-2 |
-| `test_tool_get_user_context.py` | ≥ 5 new | AC-3 |
+| `test_tool_search_products.py` | ≥ 9 new (8 base + 1 internal-cap caveat) | AC-1 |
+| `test_tool_search_stores.py` | ≥ 10 new | AC-2 |
+| `test_tool_get_user_context.py` | ≥ 6 new (5 base + 1 confidence boundary) | AC-3 |
 | `test_tool_recall_history.py` | ≥ 5 new | AC-4 |
-| `test_tool_clarify.py` | ≥ 3 new | AC-5 |
+| `test_tool_clarify.py` | ≥ 5 new | AC-5 |
 | `test_chat_v2_stream.py` extension | ≥ 6 new | AC-6 |
-| **Total new** | **≥ 33** | — |
+| **Total new** | **≥ 41** | — |
 
-That puts us at 141 + 33 = **174**. To hit 180, expect 6+ "free" tests as side effects
-of the fixture work (e.g. fixture sanity checks, additional parameter coverage in
-the per-tool files that come naturally). Target is `≥ 180`, not `==`.
+That puts the realistic floor at 141 + 41 = **182**. AC-9 still requires CI green with the
+new total; raise the target to `≥ 187` to leave ~5 tests of headroom for "free" fixture
+sanity checks and naturally occurring parameter coverage. The AC-4 and AC-5 surfaces are
+small (5 tests each is the right shape, not a target ceiling), so don't pad them artificially.
 
 ### Git workflow
 
@@ -467,3 +489,4 @@ _To be filled by dev agent._
 | Date | Change |
 |---|---|
 | 2026-05-30 | Story created from v2 sprint plan W8 |
+| 2026-05-30 | Validation pass: corrected AC-2/4/5 against actual tool surface (clarify has no kind dispatch; recall_history has no reference param; search_stores has no GPS-clarification path and no page param). Added AC-1 cap caveat and AC-3 confidence-boundary tests. |
