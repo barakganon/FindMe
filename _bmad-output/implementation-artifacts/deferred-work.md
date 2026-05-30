@@ -3,6 +3,16 @@
 > Items surfaced during code reviews that are real concerns but out-of-scope for the current story.
 > Each entry includes the originating review, the file location, and the deferral reason.
 
+## Deferred from: code review of story 5-7-ui-polish-and-repair (2026-05-29)
+
+- **Anon → logged-in derived_facts migration.** Redis key changes from `anon:<sid>` to `user:<id>` at registration; chip strip loses session-derived facts. Fix touches `/api/auth/import-session` (accept `X-Session-ID` header, do a Redis `RENAME` or copy+delete with race handling), the frontend `register()` flow (send `X-Session-ID`), plus tests. *Deferred: out of scope for UI story; tiny incidence at soft-launch scale; a 1–2 commit follow-up.*
+
+
+- `tests/api/test_chips.py::test_logged_in_both_ordering_and_cap` feeds 7 chips (2 prefs + 5 inferred); 6-cap assertion `len(chips) <= 6` would pass at 5 or 7 too. *Deferred: behavior is correct in `chips.py` (slice `[:6]`); strengthen the assertion in a test-pass story.*
+- No test asserts unconfirmed chips are sorted confidence-desc within the unconfirmed group. Behavior is correct via `order_by(UserInferredAttribute.confidence.desc())` in `chips.py`. *Deferred: pure test-coverage gap.*
+- `MemoryChip.kind` is a free `str` in Pydantic but a `Literal['preference'|'inferred'|'session']` in TS — a future schema drift could produce wire values the frontend casts blindly. *Deferred: tighten to `Literal` in a follow-up schema-hardening pass.*
+- `_dispatchFrame` in `frontend/src/api.ts` silently drops `partial_content` SSE events because the backend doesn't emit them yet. If W8+ adds token-level streaming and rolls out gradually, this case becomes a landmine. *Deferred: implement when backend gains token streaming.*
+
 ## Deferred from: code review of story 5-1 & 5-2 (2026-05-15)
 
 **Story 5.1 (eval harness):**

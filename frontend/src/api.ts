@@ -1,10 +1,61 @@
-import type { SearchFilters, SearchResponse, StoreSearchRequest, StoreSearchResponse, ChatMessage, SessionContext, ChatResponse, User, UserLocation, VoucherCard, InferredAttribute, FavoriteStore } from './types'
+import type {
+  SearchFilters, SearchResponse, StoreSearchRequest, StoreSearchResponse,
+  ChatMessage, SessionContext, ChatResponse, ChatResponseV2,
+  StreamThinking, ToolCallTrace, StreamError,
+  User, UserLocation, VoucherCard, InferredAttribute, FavoriteStore,
+} from './types'
 import { getAuthHeader } from './store/auth'
 
 // In dev: leave VITE_API_URL unset → '' → relative URL '/api/*' goes through Vite proxy.
 // In prod: set VITE_API_URL=https://api.<domain> in Vercel → calls go cross-origin (CORS-allowed).
 const API_BASE = import.meta.env.VITE_API_URL ?? ''
 const BASE = `${API_BASE}/api`
+
+// --- Session ID (W7) -------------------------------------------------------
+// Single source of truth for the anon session id sent as X-Session-ID. Used
+// by both streamChatV2 and sendChatMessage so we never race on first-load
+// generation. Persists forever in localStorage; survives auth changes.
+
+const SESSION_ID_KEY = 'findme_session_id'
+
+// Memoized fallback id for environments where localStorage is unavailable
+// (Safari private mode, non-secure HTTP context, sandboxed iframe). Without
+// this, every call would mint a new UUID and break Redis session bucketing.
+let _inMemorySessionId: string | null = null
+
+export function getOrCreateSessionId(): string {
+  try {
+    const existing = localStorage.getItem(SESSION_ID_KEY)
+    if (existing) return existing
+    const id = _safeUuid()
+    localStorage.setItem(SESSION_ID_KEY, id)
+    return id
+  } catch {
+    // localStorage unavailable: memoize one id at module scope so subsequent
+    // calls within this tab session return the same value.
+    if (_inMemorySessionId === null) _inMemorySessionId = _safeUuid()
+    return _inMemorySessionId
+  }
+}
+
+function _safeUuid(): string {
+  // crypto.randomUUID throws in non-secure context. Guard with try.
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID()
+    }
+  } catch {
+    // fall through to manual UUID
+  }
+  return _fallbackUuid()
+}
+
+function _fallbackUuid(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
+  })
+}
 
 export async function searchProduct(query: string, filters: SearchFilters): Promise<SearchResponse> {
   const res = await fetch(`${BASE}/search`, {
@@ -41,7 +92,11 @@ export async function sendChatMessage(
 ): Promise<ChatResponse> {
   const res = await fetch(`${BASE}/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Session-ID': getOrCreateSessionId(),
+      ...getAuthHeader(),
+    },
     body: JSON.stringify({
       message,
       history,
@@ -51,6 +106,176 @@ export async function sendChatMessage(
   })
   if (!res.ok) throw new Error('שגיאה בשליחת הודעה')
   return res.json()
+}
+
+// --- W7: streaming v2 chat -------------------------------------------------
+
+export interface StreamCallbacks {
+  onThinking?: (e: StreamThinking) => void
+  onToolCall?: (e: ToolCallTrace) => void
+  onFinal: (response: ChatResponseV2) => void
+  onError?: (e: StreamError | Error) => void
+  /** Called when 503 cost-budget triggers transparent v1 fallback. */
+  onFallback?: () => void
+}
+
+export interface StreamHandle {
+  cancel(): void
+}
+
+/**
+ * Stream a v2 chat turn via POST /api/chat/v2/stream (SSE). On HTTP 503 with
+ * the cost-budget body, transparently falls back to v1 /api/chat and synthesizes
+ * a fake final event so the UI loop is unchanged.
+ *
+ * SSE events handled: thinking, tool_call, final, error. partial_content is
+ * accepted defensively for future token-streaming but currently never emitted
+ * by the backend.
+ */
+export function streamChatV2(
+  message: string,
+  history: ChatMessage[],
+  sessionContext: SessionContext | null,
+  callbacks: StreamCallbacks,
+): StreamHandle {
+  const controller = new AbortController()
+  void (async () => {
+    try {
+      const resp = await fetch(`${BASE}/chat/v2/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream',
+          'X-Session-ID': getOrCreateSessionId(),
+          ...getAuthHeader(),
+        },
+        body: JSON.stringify({
+          message,
+          history,
+          session_context: sessionContext,
+          voucher_network: sessionContext?.voucher_network ?? 'buyme',
+        }),
+        signal: controller.signal,
+      })
+
+      // 503 = cost guard fired. Body is {error, fallback: "/api/chat"}.
+      // Transparently re-issue against v1 and synthesize a ChatResponseV2.
+      if (resp.status === 503) {
+        callbacks.onFallback?.()
+        await _fallbackToV1(message, history, sessionContext, callbacks)
+        return
+      }
+
+      if (!resp.ok || !resp.body) {
+        const text = await resp.text().catch(() => '')
+        throw new Error(`stream HTTP ${resp.status}${text ? `: ${text.slice(0, 200)}` : ''}`)
+      }
+
+      await _consumeSse(resp.body, callbacks)
+    } catch (err) {
+      if ((err as { name?: string }).name === 'AbortError') return
+      callbacks.onError?.(err as Error)
+    }
+  })()
+  return { cancel: () => controller.abort() }
+}
+
+async function _consumeSse(stream: ReadableStream<Uint8Array>, cb: StreamCallbacks): Promise<void> {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+  // SSE frames are separated by a blank line (\n\n). A single read() may
+  // contain multiple frames or only part of one — buffer until we see a
+  // boundary, then process complete frames.
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) {
+      // Flush any trailing complete frame
+      if (buffer.trim()) _dispatchFrame(buffer, cb)
+      return
+    }
+    buffer += decoder.decode(value, { stream: true })
+    let idx: number
+    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+      const frame = buffer.slice(0, idx)
+      buffer = buffer.slice(idx + 2)
+      if (frame.trim()) _dispatchFrame(frame, cb)
+    }
+  }
+}
+
+function _dispatchFrame(frame: string, cb: StreamCallbacks): void {
+  let event: string | null = null
+  const dataLines: string[] = []
+  for (const line of frame.split('\n')) {
+    // SSE spec: strip the colon then a single optional leading space — do NOT
+    // trim() the whole line, which would corrupt payloads with leading/trailing
+    // whitespace inside multi-line JSON.
+    if (line.startsWith('event:')) event = _stripOneSpace(line.slice(6))
+    else if (line.startsWith('data:')) dataLines.push(_stripOneSpace(line.slice(5)))
+  }
+  if (!event || dataLines.length === 0) return
+  let payload: unknown
+  try {
+    payload = JSON.parse(dataLines.join('\n'))
+  } catch {
+    // Parse failure on an `error` frame still needs to surface — without this,
+    // a corrupt error event leaves the UI's in-flight bubble stuck until the
+    // 30s safety timer fires.
+    if (event === 'error') {
+      cb.onError?.({ error: 'malformed error event from server' } as StreamError)
+    }
+    return
+  }
+  switch (event) {
+    case 'thinking':
+      cb.onThinking?.(payload as StreamThinking)
+      break
+    case 'tool_call':
+      cb.onToolCall?.(payload as ToolCallTrace)
+      break
+    case 'final':
+      cb.onFinal(payload as ChatResponseV2)
+      break
+    case 'error':
+      cb.onError?.(payload as StreamError)
+      break
+    // partial_content is reserved for future token-level streaming
+  }
+}
+
+function _stripOneSpace(s: string): string {
+  return s.startsWith(' ') ? s.slice(1) : s
+}
+
+async function _fallbackToV1(
+  message: string,
+  history: ChatMessage[],
+  sessionContext: SessionContext | null,
+  cb: StreamCallbacks,
+): Promise<void> {
+  try {
+    const v1 = await sendChatMessage(message, history, sessionContext)
+    // Synthesize a ChatResponseV2 shape so the UI doesn't care which path served us.
+    const synthesized: ChatResponseV2 = {
+      message: v1.message,
+      intent: v1.intent,
+      product_results: v1.product_results,
+      store_results: v1.store_results,
+      needs_location: v1.needs_location,
+      location_prompt: v1.location_prompt,
+      voucher_network: v1.voucher_network,
+      search_time_ms: v1.search_time_ms,
+      chips: [],
+      // `cost_budget` is the honest terminator — using 'content' would poison
+      // any downstream telemetry that counts the budget-fallback bucket as
+      // normal completion.
+      trace: { tool_calls: [], iterations: 0, total_latency_ms: 0, total_cost_usd: null, terminated_by: 'cost_budget' },
+    }
+    cb.onFinal(synthesized)
+  } catch (err) {
+    cb.onError?.(err as Error)
+  }
 }
 
 // Auth functions

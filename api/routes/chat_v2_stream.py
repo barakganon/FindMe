@@ -149,11 +149,22 @@ async def chat_v2_stream(
                 store_results=result.store_results,
                 user_message=body.message,
                 assistant_message=result.message,
+                tool_calls=result.tool_calls,
             )
         except Exception:
             pass
         try:
             await register_cost(redis, result.total_cost_usd)
+        except Exception:
+            pass
+
+        # 4b. Build memory chips from fresh state — must run AFTER save (W7).
+        # Best-effort: chip-building failure must never break the stream.
+        chips: list = []
+        try:
+            from api.agent.chips import build_chips
+            fresh_state = await load_session_state(redis, session_id)
+            chips = await build_chips(current_user, fresh_state, db)
         except Exception:
             pass
 
@@ -175,6 +186,7 @@ async def chat_v2_stream(
             needs_location=_looks_like_location_prompt(trace),
             voucher_network=body.voucher_network,
             search_time_ms=elapsed_ms,
+            chips=chips,
             trace=trace,
         )
         # Serialize via Pydantic to get nested dicts (model_dump returns plain dict)

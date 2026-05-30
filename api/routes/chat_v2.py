@@ -22,6 +22,7 @@ from openai import AsyncOpenAI
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.agent.chips import build_chips
 from api.agent.cost_guard import (
     is_over_budget,
     register_cost,
@@ -154,7 +155,7 @@ async def chat_v2(
 
     elapsed_ms = (time.monotonic() - started) * 1000
 
-    # Persist this turn's tray into session memory for the next turn's recall.
+    # Persist this turn's tray + tool-call derived facts into session memory.
     # No-op if Redis is unavailable or session_id is None.
     await save_session_state(
         redis,
@@ -163,7 +164,12 @@ async def chat_v2(
         store_results=result.store_results,
         user_message=body.message,
         assistant_message=result.message,
+        tool_calls=result.tool_calls,
     )
+
+    # Reload state so the chip strip reflects facts saved this turn (W7).
+    fresh_state = await load_session_state(redis, session_id)
+    chips = await build_chips(current_user, fresh_state, db)
 
     trace = AgentTrace(
         tool_calls=result.tool_calls,
@@ -201,6 +207,7 @@ async def chat_v2(
         needs_location=_looks_like_location_prompt(trace),
         voucher_network=body.voucher_network,
         search_time_ms=elapsed_ms,
+        chips=chips,
         trace=trace,
     )
 

@@ -1,6 +1,6 @@
 # Story 5.7: UI Polish and Conversation Repair (W7)
 
-Status: ready-for-dev
+Status: review
 
 > **Source:** [findme-v2-sprint-plan.md](../planning-artifacts/findme-v2-sprint-plan.md) — Week 7.
 > The agentic backend has been live since W5: `POST /api/chat/v2/stream` emits SSE events
@@ -208,26 +208,29 @@ scenario and any deltas vs the W6 baseline.
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 (AC-3 backend):** add `MemoryChip` schema, `chips: list[MemoryChip]` to `ChatResponseV2`,
+- [x] **Task 1 (AC-3 backend):** add `MemoryChip` schema, `chips: list[MemoryChip]` to `ChatResponseV2`,
       `derived_facts: dict[str, str]` to `SessionState`.
-- [ ] **Task 2 (AC-3 backend):** create `api/agent/chips.py` with `build_chips()` per the mapping
+- [x] **Task 2 (AC-3 backend):** create `api/agent/chips.py` with `build_chips()` per the mapping
       table. Wire into `chat_v2.py` and `chat_v2_stream.py` before emitting `final`.
-- [ ] **Task 3 (AC-3 backend):** populate `derived_facts` in `session_memory.save_session_state`
+- [x] **Task 3 (AC-3 backend):** populate `derived_facts` in `session_memory.save_session_state`
       by inspecting this turn's tool_call args (`search_products.brand/max_price`,
       `search_stores.city`). Keep accumulation idempotent — newer values overwrite older.
-- [ ] **Task 4 (AC-7 backend):** `tests/api/test_chips.py` covering 5 cases above.
-- [ ] **Task 5 (AC-7 backend):** extend `tests/api/test_chat_v2_stream.py` for chips in `final`.
-- [ ] **Task 6 (AC-1):** `streamChatV2` in `frontend/src/api.ts` — fetch + ReadableStream + SSE parse.
-- [ ] **Task 7 (AC-5):** 503 detection in `streamChatV2` → silent fallback to v1.
-- [ ] **Task 8 (AC-6 + AC-2 + AC-3 + AC-4):** rewrite `ChatInterface.tsx`:
+- [x] **Task 4 (AC-7 backend):** `tests/api/test_chips.py` covering 5 cases above.
+- [x] **Task 5 (AC-7 backend):** extend `tests/api/test_chat_v2_stream.py` for chips in `final`.
+- [x] **Task 6 (AC-1):** `streamChatV2` in `frontend/src/api.ts` — fetch + ReadableStream + SSE parse.
+- [x] **Task 7 (AC-5):** 503 detection in `streamChatV2` → silent fallback to v1.
+- [x] **Task 8 (AC-6 + AC-2 + AC-3 + AC-4):** rewrite `ChatInterface.tsx`:
   - Two-column layout (flex row ≥768px, stack <768px)
   - Chip strip (reads `final.chips`)
   - Tray panel with localStorage persistence, dedup, 20-item cap, `🗑️ נקה`
   - Streaming state line in in-flight bubble, mapped from `onThinking`
   - Mind-changer subtitle when `final.intent` differs from last assistant `intent`
 - [ ] **Task 9 (AC-8):** manual run of all 5 scenarios. Capture baseline doc. Iterate on any
-      visible regressions before marking done.
-- [ ] **Task 10:** Story → done, sprint-status updated, commit on
+      visible regressions before marking done. **Awaiting manual run by Barakganon** —
+      baseline template at `tests/eval/baselines/w7-ui-validation-template.md`. Backend
+      code, frontend code, and tests are all production-ready; only browser-based
+      Hebrew interaction by a human can verify the gate.
+- [x] **Task 10:** Story → ready-for-review, sprint-status updated, commits on
       `feature/w7-ui-polish-and-repair`, PR opened.
 
 ## Dev Notes
@@ -405,17 +408,119 @@ stays Hebrew-RTL.
 - [Source: _bmad-output/implementation-artifacts/deferred-work.md — known deferrals]
 - [Source: _bmad-output/project-context.md — frontend + backend rules]
 
+### Review Findings (2026-05-29 multi-agent adversarial review)
+
+**Decision needed (resolved 2026-05-29):**
+
+- [x] [Review][Decision][A] Inferred-attribute confidence threshold conflict — chose option A: tighten chips to `> 0.5` (privacy-strict). Aligns chips with the chip strip's "always-visible personalization surface" role; transparency for low-confidence guesses lives in the ProfileDrawer instead. Applied as a patch.
+- [x] [Review][Decision][C] Anon → logged-in transition orphans `derived_facts` — chose option C: defer. Migrating Redis state across the auth boundary touches `/auth/import-session` + frontend session-id transmission + race handling, which is out of scope for a UI story. Appended to `deferred-work.md`.
+
+**Patches:**
+
+- [x] [Review][Patch] 30s safety timer is broken three ways: no `clearTimeout` on success/error, `onError` never sets `receivedFinal=true`, `loading` closure is stale [`frontend/src/components/ChatInterface.tsx` `sendMessage()`]
+- [x] [Review][Patch] 200ms `settleFinal` timer never cleared — interleaved sends graft prior turn onto new conversation [`ChatInterface.tsx` `onFinal` callback]
+- [x] [Review][Patch] Tray dedup fallback `${storeId}:${canonicalName}` is always truthy → variant products collapse to one tray slot [`ChatInterface.tsx` `mergeIntoTray()` ~line 1003]
+- [x] [Review][Patch] Component unmount during stream → stale `setMessages` runs against post-logout state; no `useEffect` cleanup cancels the handle [`ChatInterface.tsx` `sendMessage()`]
+- [x] [Review][Patch] `final.intent === 'error'` cascades phantom topic-change subtitle on error bubbles and into the next successful turn [`ChatInterface.tsx` `onFinal` `topicChanged` calc]
+- [x] [Review][Patch] AC-3 violation: `has_children=true` + `child_age_range` both render — duplicate 👦 chips. Spec required a single compound chip [`api/agent/chips.py` `_inferred_to_chip()`]
+- [x] [Review][Patch] AC-4 violation: continuation badge `המשך השיחה ↑` not implemented [`ChatInterface.tsx` in-flight bubble]
+- [x] [Review][Patch] SSE `data:` line `.trim()` corrupts multi-line JSON payloads — spec strips only one leading space [`frontend/src/api.ts` `_dispatchFrame()`]
+- [x] [Review][Patch] `_fallbackToV1` synthesizes `trace.terminated_by: 'content'` → telemetry treats budget fallbacks as zero-cost content-terminated turns. Either widen the enum to include `'fallback'` or use `'cost_budget'` [`frontend/src/api.ts` `_fallbackToV1()`]
+- [x] [Review][Patch] `getOrCreateSessionId()` returns a fresh UUID per call in Safari private mode / non-secure context — breaks single-source contract; Redis bucketing fails silently [`frontend/src/api.ts`]
+- [x] [Review][Patch] Chip `source` field leaks raw user message text as a `title=` tooltip on every chip — privacy regression [`frontend/src/components/ChatInterface.tsx` chip strip `<span title={chip.source}>`]
+- [x] [Review][Patch] `messages.slice(-10)` history sent to backend includes prior error bubbles — agent sees its own "מצטער, אירעה שגיאה…" as prior assistant turns [`ChatInterface.tsx` `sendMessage()`]
+- [x] [Review][Patch] GPS resend uses `lastMessage` (most recently sent text), not the message the needs_location bubble belongs to — interleaved sends resend the wrong message [`ChatInterface.tsx` `requestGPS()` callsite]
+- [x] [Review][Patch] `localStorage.findme_tray` has no schema version — drift will crash `<ResultCard result={undefined}>` for existing users on next deploy [`ChatInterface.tsx` `loadTray()`]
+- [x] [Review][Patch] Tray persists across user logout — privacy leak on shared devices. Clear on logout for logged-in users (anon→anon retention is fine) [`ChatInterface.tsx` `onLogout` handler]
+- [x] [Review][Patch] Loading-dots branch (`loading && !streamingState`) is dead code — `streamingState='thinking'` is set in the same render as `loading=true` [`ChatInterface.tsx` JSX]
+- [x] [Review][Patch] `_clean_int_str` truncates instead of rounds — `default_max_price="300.7"` displays as `₪300` [`api/agent/chips.py`]
+- [x] [Review][Patch] Tray header `<button>` fires `onMobileToggle` on desktop too; `localStorage.findme_tray_open` writes occur unnecessarily [`ChatInterface.tsx` `TrayPanel`]
+
+**Deferred (real but not blocking this PR):**
+
+- [x] [Review][Defer] `tests/api/test_chips.py` 6-cap test only feeds 7 chips — would pass at 5 or 7 [`tests/api/test_chips.py`] — deferred, test-coverage gap not a code bug
+- [x] [Review][Defer] No test asserts confidence-desc ordering of unconfirmed chips [`tests/api/test_chips.py`] — deferred, behavior is correct in `chips.py` via `order_by(confidence.desc())`
+- [x] [Review][Defer] `MemoryChip.kind` is free `str`, not `Literal` — type-strictness only [`api/schemas.py`] — deferred, no runtime risk
+- [x] [Review][Defer] `_dispatchFrame` silently drops `partial_content` events — future-proofing if backend ever streams tokens [`frontend/src/api.ts`] — deferred, current backend doesn't emit them
+
 ## Dev Agent Record
 
 ### Agent Model Used
 
-_To be filled by dev agent._
+claude-opus-4-7 (1M context)
 
 ### Debug Log References
 
+- Existing pytest_flask plugin in system Python 3.11 conflicts with newer Flask;
+  ran tests with `.venv/bin/python -m pytest -p no:cacheprovider` to bypass.
+- Stale pre-existing TypeScript warning `import.meta.env` in `frontend/src/api.ts` —
+  not introduced by this story, no `vite/client` types reference in tsconfig.
+- Vite production build clean: 80 modules transformed, 324 KB JS (100 KB gzip).
+
 ### Completion Notes List
 
+**Tasks 1–8 + 10 done; Task 9 (manual validation) deferred to a human run.**
+
+- Backend (T1–T6): `MemoryChip` schema, `chips` on `ChatResponseV2`, `derived_facts`
+  on `SessionState`, `api/agent/chips.py` builder with prefs → confirmed → unconfirmed
+  ordering + 6-cap, `save_session_state(..., tool_calls=...)` extractor, wired into both
+  `/api/chat/v2` and `/api/chat/v2/stream`. **137 / 137 backend tests pass (was 123).**
+- Frontend (T7): `streamChatV2()` in `frontend/src/api.ts` with fetch+ReadableStream,
+  proper `\n\n` SSE-frame buffering, transparent 503 → v1 fallback via
+  `_fallbackToV1()`. Single-source `getOrCreateSessionId()` exported.
+- Frontend (T8): full `ChatInterface.tsx` rewrite — 60/40 chat/tray flex split
+  with RTL flip (DOM order = chat, tray; visually = tray on right), `dir="rtl"`
+  on outer container. Memory chip strip reads `final.chips`; mobile tray starts
+  collapsed and persists open/closed in `localStorage.findme_tray_open`; tray
+  dedup by `(type, id)`; topic-change subtitle when `final.intent` differs;
+  streaming state line synthesized from `onThinking` + `onToolCall` per AC-4;
+  transparent v1-fallback notice shown once per tab session via
+  `sessionStorage.findme_fallback_notice_shown`.
+- T9 baseline doc skeleton: `tests/eval/baselines/w7-ui-validation-template.md` with
+  all 5 canonical scenarios + layout checks + sign-off block. **The gate verdict
+  belongs to the human running real Hebrew turns against real Gemini calls.**
+- 30-second safety timeout in `ChatInterface.sendMessage` for hung streams.
+- Vite production build green.
+
+**Anti-pattern checks honored:**
+- v1 `/api/chat` untouched (still the fallback target)
+- `_run_product_search` not moved or renamed
+- `DEFAULT_SYSTEM_PROMPT` not touched
+- No EventSource (POST-incompatible)
+- No new dependency added; no `auth library`, `state manager`, or `animation lib`
+
 ### File List
+
+Backend (new):
+- `api/agent/chips.py`
+- `tests/api/test_chips.py`
+
+Backend (modified):
+- `api/schemas.py` — added `MemoryChip` model; `chips` field on `ChatResponseV2`
+- `api/agent/session_memory.py` — added `derived_facts` field on `SessionState`;
+  `tool_calls` parameter on `save_session_state` + `_extract_derived_facts` helper
+- `api/routes/chat_v2.py` — import + build_chips + chips field on response;
+  pass tool_calls to save_session_state
+- `api/routes/chat_v2_stream.py` — same; chip-build wrapped in best-effort try
+- `tests/api/test_session_memory.py` — 5 new cases for derived_facts + load round-trip
+- `tests/api/test_chat_v2_stream.py` — assert chips present in final event
+
+Frontend (new):
+- *(none)* — all changes are extensions of existing files
+
+Frontend (modified):
+- `frontend/src/types.ts` — `MemoryChip`, `ToolCallTrace`, `AgentTrace`,
+  `ChatResponseV2`, `StreamThinking`, `StreamError`
+- `frontend/src/api.ts` — `getOrCreateSessionId`, `streamChatV2`, `_consumeSse`,
+  `_dispatchFrame`, `_fallbackToV1`; `X-Session-ID` header added to v1 chat too
+- `frontend/src/components/ChatInterface.tsx` — full rewrite per AC-1, AC-2,
+  AC-3, AC-4, AC-5, AC-6
+
+Story/docs:
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` — 5-7 → in-progress
+- `_bmad-output/implementation-artifacts/5-7-ui-polish-and-repair.md` — tasks
+  checked, Dev Agent Record + File List populated, Status → review
+- `tests/eval/baselines/w7-ui-validation-template.md` (new) — manual-run template
 
 ## Change Log
 
@@ -423,3 +528,4 @@ _To be filled by dev agent._
 |---|---|
 | 2026-05-29 | Story created from v2 sprint plan W7 |
 | 2026-05-29 | Validation pass: fixed `_run_product_search` path, AC-4 streaming line, RTL flex direction, `is_confirmed` chip handling, chip mapping authority, `derived_facts` tests, session-id helper, mobile tray default, baseline filename |
+| 2026-05-29 | Implementation complete (tasks 1–8 + 10). T9 awaits human manual run against the canonical 5 scenarios. 137/137 backend tests pass; frontend builds clean. |
