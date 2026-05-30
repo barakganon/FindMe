@@ -112,6 +112,10 @@ _Critical rules and patterns AI agents must follow when implementing code in thi
 - Run: `pytest tests/` — current baseline is **29/29 passing**; never submit code that breaks this
 - Each chat/search route needs: happy path, missing fields, anonymous fallback, clarify/error fallback
 - LLM token budget enforcement and JSON parse fallback must be tested explicitly for chat routes
+- Every new tool in `api/agent/tools/` MUST have a matching `tests/api/test_tool_<name>.py`
+  file with at least: happy path, empty/no-result path, error path, anonymous (when
+  applicable), and per-parameter coverage for each tool parameter that has documented
+  behavior (W8)
 
 ### Code Quality & Style Rules
 

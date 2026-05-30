@@ -144,3 +144,17 @@ Each file contains:
 3. Per-section breakdown (by `notes` tag — F-01, F-11, Sally, etc.)
 4. Top 10 failures (query + expected + got + which dimension failed)
 5. Comparison delta vs previous baseline (for runs after the first)
+
+---
+
+## Testing patterns (W8)
+
+Direct unit tests for agent tools live in `tests/api/test_tool_<name>.py` (one file
+per `api/agent/tools/<name>.py`). Each file mocks the tool's external dependencies
+at the source — for `search_products` and `search_stores`, that means
+`api.routes.chat._run_product_search` / `_run_store_search`. Shared mock setup
+(AsyncMock SQLAlchemy session, the `tool_context` kwargs dict, an `httpx.AsyncClient`
+wired to the FastAPI app with default overrides) lives in `tests/api/conftest.py`
+and `tests/conftest.py`. Tests do not redefine those fixtures. The eval harness
+above complements unit tests by exercising the full agent loop against a deployed
+backend — never substitute one for the other.
