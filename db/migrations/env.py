@@ -13,9 +13,14 @@ from db.models import Base  # noqa: E402
 
 config = context.config
 
-# Override sqlalchemy.url from environment if set
-db_url = os.getenv("DATABASE_URL_SYNC")
+# Override sqlalchemy.url from environment. Prefer DATABASE_URL_SYNC (explicit
+# psycopg2 URL) but fall back to DATABASE_URL with the +asyncpg driver swapped
+# for +psycopg2 — alembic needs the sync driver. This lets CI (which only sets
+# DATABASE_URL=postgresql+asyncpg://...) run migrations without a separate var.
+db_url = os.getenv("DATABASE_URL_SYNC") or os.getenv("DATABASE_URL")
 if db_url:
+    if "+asyncpg" in db_url:
+        db_url = db_url.replace("+asyncpg", "+psycopg2")
     config.set_main_option("sqlalchemy.url", db_url)
 
 if config.config_file_name is not None:
