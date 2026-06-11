@@ -211,6 +211,26 @@ This codifies the W8 contract so future tools don't ship without coverage.
 - [x] **Task 11:** Story → review, sprint-status updated, commits on
       `feature/w8-test-rewrite`, PR opened.
 
+### Review Findings
+
+> Review fixes applied 2026-06-11
+
+- [x] [Review][Decision] **AC-3 confidence-boundary test is mock-of-the-mock** — The test hand-feeds a single `confidence=0.5` row through the mock and asserts it's returned; the 0.499 exclusion case is only described in prose. The production SQL `confidence >= 0.5` predicate is never inspected. If a dev changed it to `> 0.5`, the test would still pass. Need to choose how to actually verify the SQL filter: (a) inspect `db.execute.call_args[0][0]` for the `>= 0.5` clause via `str()` comparison, (b) accept the simulation limitation with a docstring comment that the SQL clause is verified by integration tests only, or (c) replace with an integration test against a real DB (out of W8 scope). [tests/api/test_tool_get_user_context.py:153-175] — applied: chose option (b) — SQLAlchemy ORM builds WHERE via expression objects, not literal strings, so `str(call_args)` does not contain `>= 0.5`; added docstring explaining the predicate is integration-test territory.
+- [x] [Review][Patch] **app_client fixture's `_override_redis` returns a fresh AsyncMock per call, disconnected from any test fixture** [tests/api/conftest.py:74-103] — applied
+- [x] [Review][Patch] **test_db_unavailable patches `__import__` but `db.models` may already be in `sys.modules`** — add `monkeypatch.delitem(sys.modules, "db.models", raising=False)` before patching, else the test passes via cache and never enters the ImportError branch [tests/api/test_tool_get_user_context.py:177-198] — applied
+- [x] [Review][Patch] **test_stream_final_chips_anon_with_derived_facts lacks `len(chips) == 2` and rounding-boundary case** — add count assertion and a `max_price='300.7' → '₪301'` rounding test [tests/api/test_chat_v2_stream.py:288-306] — applied
+- [x] [Review][Patch] **test_stream_current_user_overrides_x_session_id doesn't assert anon ID never appears** — add `assert not any(sid and sid.startswith("anon:") for sid in captured)` [tests/api/test_chat_v2_stream.py:380-395] — applied
+- [x] [Review][Patch] **test_per_bucket_exception_is_swallowed checks only for "נמצאו" substring** — strengthen to `assert "נמצאו 2 חנויות" in summary` so a regression that returns 0 surviving stores would be caught [tests/api/test_tool_search_stores.py:185-213] — applied
+- [x] [Review][Patch] **test_extra_kwargs_swallowed passes `session_state="ignored"` (string)** — if `execute_clarify` ever reads session_state it would AttributeError silently today; replace with `SessionState.empty()` [tests/api/test_tool_clarify.py:60-72] — applied
+- [x] [Review][Patch] **AC-6 SSE buffer-split test missing** — the spec lists buffering-across-reads as a required case; only multi-byte UTF-8 is documented as waived. Add a unit test that feeds `_parse_sse` (or a frontend-emulation helper) a frame split at the `\n\n` boundary across two reads [tests/api/test_chat_v2_stream.py:200-220] — applied: added `test_sse_buffer_split_at_frame_boundary` splitting at the `\n\n` frame terminator boundary
+- [x] [Review][Patch] **AC-9 fixture-surface docstring missing in 4 of 5 new tool test files** — clarify, get_user_context, recall_history, search_stores all describe the tool under test but never mention the `tool_context` / `mock_db` fixtures they consume. Only test_tool_search_products.py mentions it. Add a one-line "Fixtures:" reference to the module docstring of the other four — applied
+- [x] [Review][Defer] **Brand-rerank stable-tier-ordering assertion locks implementation detail** [tests/api/test_tool_search_products.py:148-167] — deferred, spec bullet
+- [x] [Review][Defer] **LocationFilter `is` identity assertion is brittle if future code copies the filter** [tests/api/test_tool_search_products.py:312, test_tool_search_stores.py:282] — deferred, current behavior is pass-by-ref
+- [x] [Review][Defer] **`_wire_execute` assumes db.execute SELECT order without enforcing it** [tests/api/test_tool_get_user_context.py:47-52] — deferred, would silently swap datasets if tool reorders queries; add `db.execute.call_count` assertion when first regression bites
+- [x] [Review][Defer] **redis_mock fixture defined but never referenced in this diff** [tests/conftest.py:38-50] — deferred, per AC-7 spec it's available for future use
+- [x] [Review][Defer] **make_db_result `.scalar_one_or_none()` returns `items[0]` instead of raising on multiple/zero** [tests/api/conftest.py:33-41] — deferred, future tests may want SQLAlchemy-accurate semantics
+- [x] [Review][Defer] **Edge cases worth defensive future-proofing** — max_price=0.0 boundary, whitespace-only brand, datetime/Decimal serialization in recall_history, UUID-vs-str dedupe, preference duplicate keys, display_name=None. Deferred as defensive future-proofing rather than ship-blockers.
+
 ## Dev Notes
 
 ### Authoritative tool signatures (read before writing tests)
