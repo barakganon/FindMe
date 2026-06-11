@@ -57,6 +57,28 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
 
+    # --- 5.9 cost + deploy hardening -------------------------------------
+    # Cost guard. Per-turn cap lives in run_agent(); these are the higher-level
+    # session and daily ceilings enforced in the v2 chat route / cost_guard.
+    per_session_cost_budget_usd: float = 0.50
+    daily_cost_budget_usd: float = 20.0
+
+    # Cache TTLs (seconds). Previously hardcoded in api/cache.py; now env-driven.
+    search_cache_ttl: int = 300
+    intent_cache_ttl: int = 120
+
+    # Rate limits (slowapi syntax, e.g. "20/minute"). Applied per-route.
+    chat_rate_limit: str = "20/minute"
+    search_rate_limit: str = "60/minute"
+
+    # Abuse surface caps. Enforced via Pydantic field constraints + middleware.
+    max_message_length: int = 2000
+    max_history_items: int = 50
+    max_request_body_bytes: int = 262_144  # 256 KiB
+
+    # Port — Render injects PORT dynamically; default 8000 for local/dev.
+    port: int = 8000
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
