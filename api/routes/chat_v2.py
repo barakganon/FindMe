@@ -25,8 +25,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.agent.chips import build_chips
 from api.agent.cost_guard import (
     is_over_budget,
+    is_session_over_budget,
     register_cost,
+    register_session_cost,
     seconds_until_midnight_utc,
+    session_budget_usd,
 )
 from api.agent.invite_allowlist import block_reason, is_allowed
 from api.agent.loop import run_agent
@@ -116,6 +119,18 @@ async def chat_v2(
     # > None (anonymous single-turn, no memory)
     session_id = derive_session_id(current_user, x_session_id)
 
+    # Per-session cost cap (W9): circuit-break before run_agent if this session
+    # has already spent its budget. Uses same 503+fallback shape as daily guard.
+    if session_id and await is_session_over_budget(redis, session_id, session_budget_usd()):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "v2 session cost budget exhausted",
+                "fallback": "/api/chat",
+            },
+            headers={"Retry-After": str(seconds_until_midnight_utc())},
+        )
+
     # Load prior turn's tray from Redis (graceful empty state if unavailable).
     session_state = await load_session_state(redis, session_id)
 
@@ -194,8 +209,9 @@ async def chat_v2(
         voucher_network=body.voucher_network,
     )
 
-    # Register this turn's cost in the daily counter. Best-effort.
+    # Register this turn's cost in the daily and session counters. Best-effort.
     await register_cost(redis, result.total_cost_usd)
+    await register_session_cost(redis, session_id, result.total_cost_usd)
 
     return ChatResponseV2(
         message=result.message,
