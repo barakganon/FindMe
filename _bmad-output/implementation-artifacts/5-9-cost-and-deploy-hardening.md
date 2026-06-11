@@ -83,13 +83,20 @@ Files: `render.yaml` (new), `Dockerfile`, `_bmad-output/implementation-artifacts
 
 ## Acceptance criteria
 
-- [ ] AC-1 Per-session `$0.50` cost cap enforced, circuit-breaks to `/api/chat`.
-- [ ] AC-2 Daily `$20` cap still enforced; both read from `Settings`.
-- [ ] AC-3 Cache TTLs env-driven via `Settings`.
-- [ ] AC-4 Rate limits applied to all chat + search routes; 429 on breach; anon still works.
-- [ ] AC-5 Request body size + message length capped (413 / 422). *(foundation)*
-- [x] AC-6 `render.yaml` present and port-agnostic; no live deploy.
-- [ ] AC-7 Full test suite green; new tests for cost/cache/rate-limit.
+- [x] AC-1 Per-session `$0.50` cost cap enforced, circuit-breaks to `/api/chat`. (WS-A `ab0e8df`)
+- [x] AC-2 Daily `$20` cap still enforced; session+daily budgets read from `Settings`. (WS-A)
+- [x] AC-3 Cache TTLs env-driven via `Settings`. (WS-B `cf8b10a`)
+- [x] AC-4 Rate limits applied to all chat + search routes; 429 on breach; anon still works. (WS-C `b0637ee`)
+- [x] AC-5 Request body size + message length capped (413 / 422). *(foundation `a9dfa49`)*
+- [x] AC-6 `render.yaml` present and port-agnostic; no live deploy. (WS-E `b26b463`)
+- [x] AC-7 Full test suite green; new tests for cost/cache/rate-limit. **171/171 on integration branch.**
+
+> Integration note (Opus, 2026-06-11): all four workstream branches merged cleanly into
+> `feature/5-9-cost-deploy-hardening`; combined suite **171 passed**. WS-C removed
+> `from __future__ import annotations` from the route files (slowapi + PEP-563 lazy
+> annotations break FastAPI signature resolution) — verified app imports clean post-merge.
+> Minor follow-up: an unawaited-mock `RuntimeWarning` in `tests/api/test_rate_limit.py`
+> (non-blocking). No PR opened, no merge to master, no deploy — per run guardrails.
 
 ---
 

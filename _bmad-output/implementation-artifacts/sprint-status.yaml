@@ -108,5 +108,5 @@ development_status:
   5-6-prompt-iteration: done                     # W6 — done 2026-05-17, brand_top_result +49pts, intent 91.8%, overall 63.6%→69.4%
   5-7-ui-polish-and-repair: review               # W7 — results tray, memory chips, repair (manual validation pending)
   5-8-test-rewrite: ready-for-dev                # W8 — 40+ tests around tools
-  5-9-cost-and-deploy-hardening: backlog         # W9 — caching, rate limits, prod deploy
+  5-9-cost-and-deploy-hardening: review          # W9 — built 2026-06-11 on feature/5-9-cost-deploy-hardening (foundation + cost/cache/ratelimit/deploy merged); suite 171/171; awaits review + PR. No deploy.
   epic-5-retrospective: optional
