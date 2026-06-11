@@ -15,7 +15,6 @@ True token-level streaming is a follow-up — see deferred-work.md.
 Same gates as /api/chat/v2: cost guard, invite allowlist.
 """
 
-from __future__ import annotations
 
 import asyncio
 import json
@@ -28,6 +27,7 @@ from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
 
 from api.agent.cost_guard import (
     daily_budget_usd,
@@ -47,7 +47,7 @@ from api.agent.session_memory import (
 )
 from api.agent.tools import TOOL_SPECS, TOOLS
 from api.auth import get_optional_user
-from api.dependencies import get_ai_client, get_db, get_redis, get_settings
+from api.dependencies import get_ai_client, get_db, get_redis, get_settings, limiter
 from api.schemas import (
     AgentTrace,
     ChatRequest,
@@ -67,7 +67,9 @@ def _sse(event: str, data: dict) -> str:
 
 
 @router.post("/chat/v2/stream")
+@limiter.limit(get_settings().chat_rate_limit)
 async def chat_v2_stream(
+    request: Request,
     body: ChatRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     ai: Annotated[AsyncOpenAI, Depends(get_ai_client)],
