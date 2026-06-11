@@ -7,9 +7,10 @@ name: Eval Harness (nightly)
 #   - Nightly schedule (03:30 UTC = 06:30 Israel)
 #   - Manual via workflow_dispatch with optional base-url override
 #
-# IMPORTANT: this workflow assumes the backend is reachable at
+# IMPORTANT: this workflow runs against the backend reachable at
 # `${{ inputs.base_url || vars.EVAL_BASE_URL }}`. Until the Render deploy
-# lands, the workflow will fail with a connection error — that's expected.
+# lands, EVAL_BASE_URL is unset and the workflow SKIPS cleanly — no
+# nightly failure emails.
 # To enable post-launch:
 #   1. Set the repo variable `EVAL_BASE_URL` to the deployed URL
 #   2. Set secret `GEMINI_API_KEY` if your harness needs it (it doesn't —
@@ -55,12 +56,15 @@ jobs:
         run: |
           BASE="${{ inputs.base_url || vars.EVAL_BASE_URL }}"
           if [ -z "$BASE" ]; then
-            echo "EVAL_BASE_URL is not set. Set it as a repo variable or pass via workflow input." >&2
-            exit 1
+            echo "::notice::EVAL_BASE_URL is not set — skipping eval run. Set the repo variable EVAL_BASE_URL to enable."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "url=$BASE" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "url=$BASE" >> "$GITHUB_OUTPUT"
 
       - name: Run eval harness
+        if: steps.base.outputs.skip != 'true'
         run: |
           python -m tests.eval.runner \
             --base-url "${{ steps.base.outputs.url }}" \
@@ -71,7 +75,7 @@ jobs:
           PYTHONUNBUFFERED: "1"
 
       - name: Upload baseline artifact
-        if: always()
+        if: always() && steps.base.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: eval-baseline-${{ github.run_id }}

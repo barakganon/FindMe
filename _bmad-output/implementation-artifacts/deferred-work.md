@@ -28,3 +28,12 @@
 - `_run_product_search` is imported inside `execute_search_products` as a circular-dependency band-aid. The comment in `search_products.py` acknowledges this. [api/agent/tools/search_products.py: execute_search_products]. *Deferred to W4 — when audit fixes refactor search code, move `_run_product_search` to a shared `api/search_core.py` module so it has no chat-route imports.*
 - `result.store_results` is never populated; tool-result-handling hardcodes `if tool_name == "search_products"` and ignores other tools. Comment in loop.py notes "Future: store_search tool would extend result.store_results here." [api/agent/loop.py: tool dispatch result handling]. *Deferred to W3 — generalize when `search_stores` tool lands.*
 - `needs_location` hardcoded `False` in `chat_v2.py` — no equivalent of v1's GPS prompt mechanism. Documented in the W2 baseline interpretation. [api/routes/chat_v2.py: ChatResponseV2 construction]. *Deferred to W3 — `clarify` / `needs_location` tool lands then.*
+
+## Deferred from: code review of 5-8-test-rewrite (2026-05-30)
+
+- Brand-rerank stable-tier ordering assertion locks implementation detail (`tests/api/test_tool_search_products.py:148-167`) — spec bullet; OK to keep as written
+- LocationFilter `is` identity assertion is brittle if future code copies the filter (`tests/api/test_tool_search_products.py:312`, `test_tool_search_stores.py:282`) — current behavior is pass-by-ref
+- `_wire_execute` assumes db.execute SELECT order without enforcing it (`tests/api/test_tool_get_user_context.py:47-52`) — would silently swap datasets if tool reorders queries; add `db.execute.call_count` assertion if a regression appears
+- `redis_mock` fixture defined but never referenced in this diff (`tests/conftest.py:38-50`) — per AC-7 spec it's available for future use
+- `make_db_result.scalar_one_or_none()` returns `items[0]` instead of raising on multiple/zero (`tests/api/conftest.py:33-41`) — future tests may want SQLAlchemy-accurate semantics
+- Edge cases worth defensive future-proofing: `max_price=0.0` boundary, whitespace-only brand, datetime/Decimal serialization in recall_history, UUID-vs-str dedupe, preference duplicate keys, `display_name=None`. Documented as "consider adding" rather than ship-blockers.
