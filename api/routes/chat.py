@@ -13,7 +13,6 @@ Flow:
     5. Return ChatResponse.
 """
 
-from __future__ import annotations
 
 import json
 import re
@@ -33,7 +32,7 @@ from starlette.requests import Request
 from api.auth import get_optional_user
 from api.cache import get_intent_cache, set_intent_cache
 from api.chat_utils import apply_inferred_attributes, build_user_context_block, merge_preferences_into_search
-from api.dependencies import get_ai_client, get_db, get_redis, get_settings
+from api.dependencies import get_ai_client, get_db, get_redis, get_settings, limiter
 from api.inference import extract_and_update_attributes
 from api.prompts import HELP_RESPONSE, INTENT_PARSER_SYSTEM, RESPONSE_COMPOSER_SYSTEM
 from api.routes.search import _embed, _vec_literal, _distance_km
@@ -516,6 +515,7 @@ async def _run_store_search(
 
 
 @router.post("/chat", response_model=ChatResponse)
+@limiter.limit(get_settings().chat_rate_limit)
 async def chat(
     request: Request,
     body: ChatRequest,

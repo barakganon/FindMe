@@ -11,7 +11,6 @@ users that want memory across requests pass an `X-Session-ID: <uuid>` header
 (frontend generates per device). Logged-in users get memory keyed by user.id.
 """
 
-from __future__ import annotations
 
 import logging
 import time
@@ -21,6 +20,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from openai import AsyncOpenAI
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
 
 from api.agent.chips import build_chips
 from api.agent.cost_guard import (
@@ -37,7 +37,7 @@ from api.agent.session_memory import (
 )
 from api.agent.tools import TOOL_SPECS, TOOLS
 from api.auth import get_optional_user
-from api.dependencies import get_ai_client, get_db, get_redis, get_settings
+from api.dependencies import get_ai_client, get_db, get_redis, get_settings, limiter
 from api.schemas import (
     AgentTrace,
     ChatRequest,
@@ -82,7 +82,9 @@ def _infer_intent(terminated_by: str, trace: AgentTrace, message: str) -> str:
 
 
 @router.post("/chat/v2", response_model=ChatResponseV2)
+@limiter.limit(get_settings().chat_rate_limit)
 async def chat_v2(
+    request: Request,
     body: ChatRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     ai: Annotated[AsyncOpenAI, Depends(get_ai_client)],
