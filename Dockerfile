@@ -43,4 +43,6 @@ ENV PATH=/root/.local/bin:$PATH
 # were removed/renamed and Playwright's installer hasn't caught up).
 RUN playwright install chromium
 
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use a shell entrypoint so Render's injected $PORT is honored at runtime.
+# Falls back to 8000 in local Docker / docker-compose.
+CMD ["sh", "scripts/start.sh"]

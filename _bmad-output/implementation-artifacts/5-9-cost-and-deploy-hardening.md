@@ -88,8 +88,75 @@ Files: `render.yaml` (new), `Dockerfile`, `_bmad-output/implementation-artifacts
 - [ ] AC-3 Cache TTLs env-driven via `Settings`.
 - [ ] AC-4 Rate limits applied to all chat + search routes; 429 on breach; anon still works.
 - [ ] AC-5 Request body size + message length capped (413 / 422). *(foundation)*
-- [ ] AC-6 `render.yaml` present and port-agnostic; no live deploy.
+- [x] AC-6 `render.yaml` present and port-agnostic; no live deploy.
 - [ ] AC-7 Full test suite green; new tests for cost/cache/rate-limit.
+
+---
+
+## Deploy notes (Render)
+
+**NO live deploy was performed. This section is config documentation only.**
+
+### Blueprint file
+`render.yaml` at the repo root defines a single `web` service (`findme-api`) of
+`runtime: docker`, built from `./Dockerfile`. To activate, connect this repo in the
+Render dashboard and click "Apply Blueprint" (or "New Blueprint Instance").
+
+### How PORT is honored
+Render injects a `$PORT` env var into every web service at runtime. The old
+exec-form `CMD ["uvicorn", ..., "--port", "8000"]` cannot expand shell variables,
+so it was replaced with:
+
+```
+CMD ["sh", "scripts/start.sh"]
+```
+
+`scripts/start.sh` (executable) runs:
+
+```sh
+exec uvicorn api.main:app --host 0.0.0.0 --port "${PORT:-8000}"
+```
+
+This honors Render's injected port in production and falls back to `8000`
+locally or in docker-compose.
+
+### Env vars that MUST be set as secrets in the Render dashboard
+The following are declared `sync: false` in `render.yaml` — they are never
+committed and must be entered manually in Render → Service → Environment:
+
+| Variable | Notes |
+|----------|-------|
+| `DATABASE_URL` | asyncpg URL to external Postgres+pgvector instance |
+| `DATABASE_URL_SYNC` | psycopg2 URL for Alembic CLI runs |
+| `REDIS_URL` | Render Key Value internal URL, or external Redis (Upstash etc.) |
+| `CELERY_BROKER_URL` | usually same as `REDIS_URL` |
+| `CELERY_RESULT_BACKEND` | Redis URL, db index 1 recommended |
+| `GEMINI_API_KEY` | Anthropic/Google Gemini key |
+| `JWT_SECRET` | generate with `openssl rand -hex 32` |
+| `GOOGLE_CLIENT_ID` | Google OAuth client id |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `CORS_ORIGINS` | comma-separated production frontend URL(s) |
+| `GOOGLE_MAPS_API_KEY` | optional — only needed for geocoding backfill |
+
+All other env vars in `render.yaml` have safe defaults committed in plain text
+(e.g. cost ceilings, rate limits, cache TTLs).
+
+### Postgres note
+Render's native Postgres does not include the `pgvector` extension. Use an
+external pgvector-enabled instance (Supabase, Neon, or a self-managed Render
+private service with the pgvector image). Wire `DATABASE_URL` to that instance.
+
+### Health check path
+`/api/admin/health` — requires a live DB + Redis connection. Render waits for
+this to return HTTP 200 before routing traffic to a new deploy.
+
+### Wiring Render Key Value (Redis)
+1. Create a "Key Value" service in the Render dashboard.
+2. Copy its **Internal Redis URL**.
+3. Paste it as the value of `REDIS_URL` (and `CELERY_BROKER_URL`) in the
+   findme-api service's environment secrets.
+
+---
 
 ## Integration (Opus, after agents finish)
 Merge `feature/5-9-cost|cache|ratelimit|deploy` into
