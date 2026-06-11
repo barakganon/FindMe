@@ -211,6 +211,36 @@ def test_sse_two_frames_concatenated_parse_to_two_events():
     assert events[1]["data"] == {"k": 2}
 
 
+def test_sse_buffer_split_at_frame_boundary():
+    """AC-6 buffer-split: when a TCP read boundary falls inside the `\\n\\n`
+    frame terminator (i.e. a client receives two chunks — one ending with `\\n`
+    and the next beginning with `\\n`) a simple line-based parser still
+    recovers both events correctly once the chunks are joined.
+
+    The backend emits complete SSE frames per event so the scenario only arises
+    at the transport / buffering layer.  This test emulates the minimal
+    reassembly that a frontend `TextDecoder({stream:true})` + newline-based
+    parser would perform: concatenate chunks, then parse.
+    """
+    from api.routes.chat_v2_stream import _sse
+
+    full_a = _sse("a", {"x": 10})
+    full_b = _sse("b", {"x": 20})
+    combined = full_a + full_b
+
+    # Simulate a buffer split at the \n\n boundary of the first frame:
+    # chunk_1 ends just before the last \n of the \n\n terminator.
+    split_at = combined.index("\n\n") + 1  # after first \n of \n\n
+    chunk1 = combined[:split_at]           # "event: a\ndata: ...\n"
+    chunk2 = combined[split_at:]           # "\nevent: b\ndata: ...\n\n"
+
+    # Reassemble (as a streaming client does) and parse
+    events = _parse_sse(chunk1 + chunk2)
+    assert [e["event"] for e in events] == ["a", "b"]
+    assert events[0]["data"] == {"x": 10}
+    assert events[1]["data"] == {"x": 20}
+
+
 @pytest.mark.anyio
 async def test_stream_emits_one_tool_call_event_per_tool(monkeypatch, override_deps):
     """When the agent invokes 3 tools, the stream emits 3 distinct tool_call events."""
@@ -292,9 +322,40 @@ async def test_stream_final_chips_anon_with_derived_facts(monkeypatch, override_
     final = next(e for e in events if e["event"] == "final")
     chips = final["data"]["chips"]
     labels = [c["label"] for c in chips]
+    assert len(chips) == 2  # exactly city + max_price chips
     assert "תל אביב" in labels
     assert "₪300" in labels
     assert all(c["kind"] == "session" for c in chips)
+
+
+@pytest.mark.anyio
+async def test_stream_final_chips_anon_max_price_rounding(monkeypatch, override_deps):
+    """max_price='300.7' → chip label '₪301' (ceiling/rounding to nearest integer)."""
+    fake_result = _make_agent_result()
+
+    async def fake_run_agent(**kwargs):
+        return fake_result
+
+    fresh = SessionState(derived_facts={"max_price": "300.7"})
+
+    async def fake_load_state(*args, **kwargs):
+        return fresh
+
+    with patch("api.routes.chat_v2_stream.run_agent", new=fake_run_agent), \
+         patch("api.routes.chat_v2_stream.load_session_state", new=fake_load_state):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/api/chat/v2/stream",
+                json={"message": "x", "history": []},
+            )
+
+    events = _parse_sse(resp.text)
+    final = next(e for e in events if e["event"] == "final")
+    chips = final["data"]["chips"]
+    price_chips = [c for c in chips if c["label"].startswith("₪")]
+    assert len(price_chips) == 1
+    # _clean_int_str uses round(), so 300.7 → 301 (rounds up, not truncates)
+    assert price_chips[0]["label"] == "₪301"
 
 
 @pytest.mark.anyio
@@ -399,5 +460,6 @@ async def test_stream_current_user_overrides_x_session_id(monkeypatch, override_
         assert resp.status_code == 200
         assert "user:user-42" in captured
         assert not any("ignored-anon-id" in sid for sid in captured if sid)
+        assert not any(sid and sid.startswith("anon:") for sid in captured)
     finally:
         app.dependency_overrides.pop(get_optional_user, None)

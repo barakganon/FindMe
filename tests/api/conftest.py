@@ -96,8 +96,11 @@ async def app_client() -> AsyncIterator[AsyncClient]:
     def _override_ai():
         return MagicMock()
 
+    # Use a single stable mock so tests can introspect calls after the request.
+    _redis_mock = AsyncMock()
+
     async def _override_redis():
-        return AsyncMock()
+        return _redis_mock
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_ai_client] = _override_ai

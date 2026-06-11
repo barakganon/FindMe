@@ -18,6 +18,9 @@ The boundary test relies on configuring the mock to behave as if the SQL
 filter has already been applied: rows with confidence=0.5 ARE in the mock
 result; rows with confidence=0.499 are NOT. This is the same contract the
 production DB enforces.
+
+Fixtures: `tool_context` (anonymous by default, fields overridable) and
+`mock_db` (AsyncMock SQLAlchemy session) from tests/api/conftest.py.
 """
 
 from __future__ import annotations
@@ -147,9 +150,16 @@ async def test_confidence_05_included_0499_excluded(tool_context):
     """Per the SQL predicate `confidence >= 0.5`, a row with confidence=0.5
     is included; 0.499 is excluded (the mock simulates the filtered set).
     Confidence is rounded to 2 decimals in the payload.
+
+    AC-3 decision (option b): the `confidence >= 0.5` SQLAlchemy WHERE clause
+    is built via ORM expression objects — it does not appear as a literal string
+    in `str(db.execute.call_args)`, so inspecting the compiled SQL text is not
+    feasible in this unit test.  The predicate is therefore verified only by
+    integration tests against a real DB; here we confirm the serialisation
+    contract given a mock that simulates the already-filtered result set.
     """
     tool_context["current_user"] = make_user()
-    # Mock returns only the 0.5 row — the 0.499 row was filtered by SQL
+    # Mock returns only the 0.5 row — the 0.499 row was filtered by SQL (see docstring)
     inferred = [SimpleNamespace(attribute="time_of_day", value="evening", confidence=0.5)]
     _wire_execute(tool_context["db"], [], inferred, [], [])
 
@@ -170,6 +180,10 @@ async def test_db_unavailable_returns_graceful_message(tool_context, monkeypatch
     the Hebrew "info unavailable" fallback without raising.
     """
     tool_context["current_user"] = make_user()
+    # Evict db.models from sys.modules so the ImportError branch is actually entered
+    # (if db.models is already cached, the patched __import__ is never called for it).
+    import sys
+    monkeypatch.delitem(sys.modules, "db.models", raising=False)
     real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __import__
 
     def fake_import(name, *args, **kwargs):

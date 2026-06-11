@@ -15,6 +15,9 @@ Covered:
   - More than 5 items → only first 5 in previous_products / previous_stores;
     counts reflect the full length
   - Pydantic validation on turn_offset (rejects 0 and 2)
+
+Fixtures: `tool_context` and `mock_db` from tests/api/conftest.py are
+available but not required — recall_history reads only session_state (no DB).
 """
 
 from __future__ import annotations

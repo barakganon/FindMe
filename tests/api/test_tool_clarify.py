@@ -14,6 +14,9 @@ Covered:
   - Empty question rejected (min_length=1)
   - Over-length (301-char) rejected (max_length=300)
   - Extra kwargs ignored via **_unused
+
+Fixtures: `tool_context` and `mock_db` from tests/api/conftest.py are
+available but not required by these tests (execute_clarify is stateless).
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from api.agent.session_memory import SessionState
 from api.agent.tools.clarify import ClarifyParams, execute_clarify
 
 
@@ -65,7 +69,7 @@ async def test_extra_kwargs_swallowed_by_unused_kwargs():
         api_key="ignored",
         location="ignored",
         current_user="ignored",
-        session_state="ignored",
+        session_state=SessionState.empty(),  # use proper type; string would silently AttributeError if ever read
         anything_else=123,
     )
     assert items == []

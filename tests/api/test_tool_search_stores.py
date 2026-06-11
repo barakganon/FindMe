@@ -17,6 +17,9 @@ Covered branches:
   - Empty-result Hebrew summary
   - Non-empty Hebrew summary with city segment
   - Unknown city → expand returns [city], exactly 1 call
+
+Fixtures: `tool_context` (anonymous, no GPS, empty session) and `mock_db`
+(AsyncMock SQLAlchemy session) from tests/api/conftest.py.
 """
 
 from __future__ import annotations
@@ -212,7 +215,7 @@ async def test_per_bucket_exception_is_swallowed(tool_context):
 
     assert call_count["n"] == 3  # all 3 buckets attempted
     assert {s.id for s in items} == {"bucket-1", "bucket-3"}
-    assert "נמצאו" in summary
+    assert "נמצאו 2 חנויות" in summary  # exact count so a regression to 0 would be caught
 
 
 @pytest.mark.anyio
