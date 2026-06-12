@@ -194,7 +194,8 @@ class ChatMessage(BaseModel):
     """A single turn in the conversation history."""
 
     role: str = Field(..., description="'user' or 'assistant'")
-    content: str = Field(..., description="Message text (Hebrew or English)")
+    # max_length mirrors Settings.max_message_length (2000) — abuse-surface cap.
+    content: str = Field(..., max_length=2000, description="Message text (Hebrew or English)")
 
 
 class SessionContext(BaseModel):
@@ -236,9 +237,15 @@ class ParsedIntent(BaseModel):
 class ChatRequest(BaseModel):
     """Request payload for POST /api/chat."""
 
-    message: str = Field(..., description="User's free-text message (Hebrew or English)")
+    # max_length/min_length mirror Settings.max_message_length (2000) — abuse-surface cap.
+    message: str = Field(
+        ..., min_length=1, max_length=2000,
+        description="User's free-text message (Hebrew or English)",
+    )
+    # max_length mirrors Settings.max_history_items (50) — caps context/cost blow-up.
     history: list[ChatMessage] = Field(
         default_factory=list,
+        max_length=50,
         description="Previous conversation turns for context",
     )
     session_context: Optional[SessionContext] = Field(

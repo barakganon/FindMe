@@ -7,7 +7,6 @@ Endpoints:
     GET  /geocode         — Free-text address → lat/lng via Nominatim
 """
 
-from __future__ import annotations
 
 import logging
 import math
@@ -17,8 +16,9 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
 
-from api.dependencies import get_db
+from api.dependencies import get_db, get_settings, limiter
 from api.schemas import (
     StoreInfo,
     StoreListResponse,
@@ -129,7 +129,9 @@ async def list_stores(
 
 
 @router.post("/stores/search", response_model=StoreSearchResponse)
+@limiter.limit(get_settings().search_rate_limit)
 async def search_stores(
+    request: Request,
     body: StoreSearchRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> StoreSearchResponse:

@@ -23,6 +23,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from api.dependencies import get_settings, limiter
+from api.middleware import BodySizeLimitMiddleware
 from api.routes import admin, auth as auth_module, chat, chat_v2, chat_v2_stream, search, stores
 from api.routes import users as users_module
 
@@ -64,6 +65,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+
+# ---------------------------------------------------------------------------
+# Request body-size limit (abuse-surface guard — rejects oversized bodies 413)
+# ---------------------------------------------------------------------------
+
+app.add_middleware(
+    BodySizeLimitMiddleware,
+    max_bytes=get_settings().max_request_body_bytes,
+)
 
 # ---------------------------------------------------------------------------
 # CORS middleware

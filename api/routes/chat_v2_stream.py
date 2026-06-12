@@ -15,7 +15,6 @@ True token-level streaming is a follow-up — see deferred-work.md.
 Same gates as /api/chat/v2: cost guard, invite allowlist.
 """
 
-from __future__ import annotations
 
 import asyncio
 import json
@@ -28,12 +27,16 @@ from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
 
 from api.agent.cost_guard import (
     daily_budget_usd,
     is_over_budget,
+    is_session_over_budget,
     register_cost,
+    register_session_cost,
     seconds_until_midnight_utc,
+    session_budget_usd,
 )
 from api.agent.invite_allowlist import block_reason, is_allowed
 from api.agent.loop import run_agent
@@ -44,7 +47,7 @@ from api.agent.session_memory import (
 )
 from api.agent.tools import TOOL_SPECS, TOOLS
 from api.auth import get_optional_user
-from api.dependencies import get_ai_client, get_db, get_redis, get_settings
+from api.dependencies import get_ai_client, get_db, get_redis, get_settings, limiter
 from api.schemas import (
     AgentTrace,
     ChatRequest,
@@ -64,7 +67,9 @@ def _sse(event: str, data: dict) -> str:
 
 
 @router.post("/chat/v2/stream")
+@limiter.limit(get_settings().chat_rate_limit)
 async def chat_v2_stream(
+    request: Request,
     body: ChatRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     ai: Annotated[AsyncOpenAI, Depends(get_ai_client)],
@@ -90,6 +95,18 @@ async def chat_v2_stream(
     settings = get_settings()
     started = time.monotonic()
     session_id = derive_session_id(current_user, x_session_id)
+
+    # Per-session cost cap (W9): circuit-break before run_agent if this session
+    # has already spent its budget. Uses same 503+fallback shape as daily guard.
+    if session_id and await is_session_over_budget(redis, session_id, session_budget_usd()):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "v2 session cost budget exhausted",
+                "fallback": "/api/chat",
+            },
+            headers={"Retry-After": str(seconds_until_midnight_utc())},
+        )
     session_state = await load_session_state(redis, session_id)
 
     location: Optional[LocationFilter] = None
@@ -155,6 +172,10 @@ async def chat_v2_stream(
             pass
         try:
             await register_cost(redis, result.total_cost_usd)
+        except Exception:
+            pass
+        try:
+            await register_session_cost(redis, session_id, result.total_cost_usd)
         except Exception:
             pass
 
