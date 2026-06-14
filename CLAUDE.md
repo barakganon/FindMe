@@ -8,7 +8,7 @@ Conversational search for Israeli gift-card holders. Start with BuyMe (buyme.co.
 
 **Value prop:** "I have a BuyMe gift card. Help me use it."
 
-## Current State (2026-05-30)
+## Current State (2026-06-14)
 
 - FastAPI `:8000`, React+TS `:5173`, Postgres+pgvector `:5432`, Redis cache
 - Migrations at **0008 (head)**. **135,865 products, 99.3% embedded**
@@ -17,25 +17,35 @@ Conversational search for Israeli gift-card holders. Start with BuyMe (buyme.co.
 - JWT auth (email + Google OAuth). **Anonymous users always work** — never block them
 - Single chat screen: chips, GPS, ProfileDrawer, results tray, memory chips, SSE streaming
 - **v2 agentic loop is active** — tool-calling LLM (`api/agent/`) with session memory in Redis (2h TTL)
+- **Epic 5 merged to master** (PRs #9–#12, 2026-06-14). Test suite **254 passing**.
+  Cost guard (per-session $0.50 + daily $20), per-IP rate limits, body-size guard,
+  env-driven cache TTLs, and a Render blueprint (`render.yaml`) are all in.
+- **Not yet deployed.** `render.yaml` + `scripts/start.sh` are deploy-ready but no
+  live Render deploy has run. Frontend rebuild + deploy still pending (deferred from W5).
 
 **Pending data tasks (no sprint blocker):**
 - `python -m db.run_geocoding` (needs `GOOGLE_MAPS_API_KEY`)
 - `python -m normalization.deduplication`
 - Re-run scrapers to populate `image_url` (1,743 done for Femina; rest pending)
 
-## Active Sprint: Epic 5 — Agentic Conversation Refactor
+## Sprint Status: Epic 5 complete → Epic 6 (deploy + launch) planned
 
-Spec: `_bmad-output/planning-artifacts/findme-v2-sprint-plan.md`.
+Epic 5 spec: `_bmad-output/planning-artifacts/findme-v2-sprint-plan.md`.
+Next epic plan: `_bmad-output/planning-artifacts/epic-6-deploy-launch-plan.md`.
 Sprint tracking: `_bmad-output/implementation-artifacts/sprint-status.yaml`.
+Retro: `_bmad-output/implementation-artifacts/epic-5-retrospective.md`.
 
 | Week | Story | Status |
 |------|-------|--------|
 | W1–W6 | 5.1–5.6 (eval, loop, tools, telemetry, streaming, prompts) | done |
 | W7 | 5.7 UI polish + repair (tray, memory chips, mind-changer) | **review** (manual validation pending) |
-| W8 | 5.8 test rewrite (40+ tool tests, target ≥187) | **ready-for-dev** |
-| W9 | 5.9 cost/deploy hardening | backlog |
+| W8 | 5.8 test rewrite | **done** (merged PR #9) |
+| W9 | 5.9 cost/deploy hardening | **done** (merged PR #10) |
 
-AWS deploy (Epic 1) is **superseded** — v2 pivot moved deploy target to Render.
+**Epic 5 is functionally complete.** Only carry-forward: 5.7 manual UI validation
+(+ the flagged anon `👦 ילד 3` chip decision). Next up is **Epic 6 — Production
+Deploy + Soft Launch** (the deferred deploy, now that hardening is in). AWS deploy
+(Epic 1) is **superseded** — v2 pivot moved deploy target to Render.
 
 ## Architecture (v2 — agentic loop)
 

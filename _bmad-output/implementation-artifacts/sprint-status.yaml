@@ -32,7 +32,7 @@
 # work justifies the ceremony.
 
 generated: 2026-05-03
-last_updated: 2026-05-30
+last_updated: 2026-06-14
 # 2026-05-29 — Story 5.7 implementation + code-review patches applied; awaits manual validation
 # 2026-05-30 — Story 5.8 spec ready for dev
 # 2026-05-30 — Story 5.8 implementation started on feature/w8-test-rewrite (stacked on W7)
@@ -101,7 +101,7 @@ development_status:
   # Spec source: planning-artifacts/findme-v2-sprint-plan.md
   # 11-week solo plan, soft-launch end W5, public end W11
   # ─────────────────────────────────────────────────────────────────────
-  epic-5: in-progress
+  epic-5: done                                   # all stories 5.1–5.9 merged to master 2026-06-14; only 5.7 manual UI validation outstanding
   5-1-eval-harness: done                         # W1 — reviewed+patched 2026-05-16, baseline 26/42=61.9%
   5-2-agent-loop-thin-slice: done                # W2 — reviewed+patched 2026-05-16, kill-gate harness-measured 21/21=100% tool_call_match
   5-3-tools-and-memory: done                     # W3 — done 2026-05-16, gate PASSED tool_call_match 32/35=91.4%
@@ -111,4 +111,18 @@ development_status:
   5-7-ui-polish-and-repair: review               # W7 — results tray, memory chips, repair (manual validation pending)
   5-8-test-rewrite: done                         # W8 — 47 new tool/stream tests + code-review patches; merged PR #9 (2026-06-14)
   5-9-cost-and-deploy-hardening: done            # W9 — cost cap, cache TTLs, rate limits, body guard, Render blueprint + review polish; merged PR #10 (2026-06-14). No live deploy yet.
-  epic-5-retrospective: optional
+  epic-5-retrospective: done                     # drafted 2026-06-14 (PR #12 merged); awaits Barak sign-off
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Epic 6 — Production Deploy + Soft Launch (PLANNED 2026-06-14)
+  # Plan: planning-artifacts/epic-6-deploy-launch-plan.md
+  # Ships the deploy-ready v2 to a small real audience + instruments it.
+  # NOTE: live deploy spends money / is outward-facing — confirm authority before 6.1.
+  # ─────────────────────────────────────────────────────────────────────
+  epic-6: backlog
+  6-1-render-backend-deploy: backlog             # apply render.yaml; external pgvector PG + Render KV; migrate; prod smoke test
+  6-2-frontend-rebuild-and-deploy: backlog       # deferred W5 ChatInterface rebuild + deploy; lock CORS to prod origin
+  6-3-5-7-manual-validation-and-anon-chip-fix: backlog  # walk 5.7 checklist on prod; resolve anon 👦 ילד chip
+  6-4-monitoring-and-alerts: backlog             # UptimeRobot /health; cost-guard daily summary; error logging
+  6-5-soft-launch-and-first-week-analytics: backlog  # invite ~5-10 holders; run 3-turn kill gate; analytics pass
+  epic-6-retrospective: optional
