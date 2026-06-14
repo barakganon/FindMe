@@ -1,0 +1,218 @@
+# Story 5.9 — Cost + Deploy Hardening (W9)
+
+> Epic 5, Week 9. Spec line from `findme-v2-sprint-plan.md`:
+> **"Caching, batching, rate limits — Can a stranger break it?"**
+> Wall-list constraint: *"Cost guard is non-negotiable: 50¢/session, $20/day,
+> circuit-breaks to old `/api/chat`."*
+
+**Status:** in-progress (autonomous build 2026-06-11)
+**Base branch:** `feature/5-9-cost-deploy-hardening` (off `master`)
+**Build model:** Opus plans + foundation; Sonnet subagents implement workstreams
+in isolated git worktrees, each pushing its own branch; Opus integrates.
+
+---
+
+## Goal
+
+Make the v2 agentic chat safe to expose to strangers and bounded in cost,
+without changing search behavior or the agent loop's tool surface.
+
+## Recon baseline (what already exists on master)
+
+| Area | Present | Gap |
+|------|---------|-----|
+| Cost guard | per-turn `$0.10` cap in `loop.run_agent`; daily `$20` in `api/agent/cost_guard.py` (Redis `INCRBYFLOAT`, fully wired in `chat_v2.py`) | **no per-session `$0.50` cap** |
+| Caching | `api/cache.py` search (300s) + intent (120s); wired in `search.py`/`chat.py` | TTLs **hardcoded**, not env-driven; not in `Settings` |
+| Rate limiting | slowapi `Limiter` instantiated (`200/min` default) + middleware in `main.py` | **no `@limiter.limit()` on any route** → effectively absent |
+| Deploy | `Dockerfile`, `docker-compose.yml`, `/api/admin/health` | **no `render.yaml`**, hardcoded port 8000 (Render injects `PORT`) |
+| Abuse surface | `get_optional_user` anon path; 30s LLM timeout | **no body-size cap, no message length cap** |
+
+## Foundation (DONE — committed on base branch by Opus)
+
+Centralizes all shared-config edits so parallel workstreams don't collide:
+
+- `api/dependencies.py` `Settings`: added `per_session_cost_budget_usd=0.50`,
+  `daily_cost_budget_usd=20.0`, `search_cache_ttl=300`, `intent_cache_ttl=120`,
+  `chat_rate_limit="20/minute"`, `search_rate_limit="60/minute"`,
+  `max_message_length=2000`, `max_history_items=50`,
+  `max_request_body_bytes=262144`, `port=8000`.
+- `.env.example`: documented all the above.
+- `api/schemas.py` `ChatRequest`/`ChatMessage`: `message` `min_length=1,max_length=2000`;
+  `history` `max_length=50`; `content` `max_length=2000`. **(Workstream D / abuse-surface validation — done in foundation.)**
+- `api/middleware.py` + `api/main.py`: `BodySizeLimitMiddleware` (413 on
+  oversized Content-Length). **(Workstream D — done in foundation.)**
+- `.gitignore`: ignore `.worktrees/` + `.claude/worktrees/`.
+- Full suite green at foundation: **141 passed**.
+
+## Workstreams (Phase B — parallel Sonnet agents, each own worktree+branch)
+
+### A — Per-session cost cap → branch `feature/5-9-cost`
+Files: `api/agent/cost_guard.py`, `api/routes/chat_v2.py`, `api/routes/chat_v2_stream.py`, `tests/api/test_cost_guard.py`.
+- Add session-scoped cost accumulation in Redis (mirror `cost_guard` daily
+  pattern; key `findme:agent:session_cost_usd:{session_id}`, TTL = session 2h).
+- Read both ceilings from `Settings` (`per_session_cost_budget_usd`,
+  `daily_cost_budget_usd`) instead of raw `os.environ`.
+- In `chat_v2.py`/stream: before `run_agent`, if session cost ≥ session budget →
+  return the existing advisory `503 {fallback: "/api/chat"}` circuit-break
+  (same shape as the daily guard). After each turn, register the turn cost to
+  the session key too.
+- Tests: session cap trips at the boundary; daily cap still trips; fail-open on
+  Redis error; cost registered to both keys.
+
+### B — Env-driven cache TTLs → branch `feature/5-9-cache`
+Files: `api/cache.py`, `api/routes/search.py`, `api/routes/chat.py`, `tests/api/test_cache.py`.
+- `set_search_cache`/`set_intent_cache` read TTL from `Settings`
+  (`search_cache_ttl`/`intent_cache_ttl`) instead of hardcoded 300/120 defaults.
+  Keep params overridable for tests.
+- Tests: TTL passed to Redis `setex` matches Settings; env override respected.
+
+### C — Apply rate limits → branch `feature/5-9-ratelimit`
+Files: `api/routes/chat.py`, `chat_v2.py`, `chat_v2_stream.py`, `search.py`, `stores.py`, `tests/api/test_rate_limit.py` (new).
+- Decorate chat routes with `@limiter.limit(settings.chat_rate_limit)` and
+  search/store routes with `settings.search_rate_limit`. slowapi needs the
+  handler to take `request: Request` — add where missing.
+- Anon must still work under the limit (CLAUDE.md rule) — limit is per-IP, not auth-gated.
+- Tests: exceeding the limit returns 429; under the limit returns 200.
+
+### E — Render deploy config → branch `feature/5-9-deploy`
+Files: `render.yaml` (new), `Dockerfile`, `_bmad-output/implementation-artifacts/5-9-cost-and-deploy-hardening.md` (deploy notes).
+- `render.yaml`: web service (Docker), `PORT` from Render, env var declarations
+  (sync:false for secrets), Redis + Postgres refs, health check `/api/admin/health`.
+- `Dockerfile` CMD: bind to `${PORT:-8000}` so Render's injected port is honored.
+- **No actual deploy** — config + docs only.
+
+## Acceptance criteria
+
+- [x] AC-1 Per-session `$0.50` cost cap enforced, circuit-breaks to `/api/chat`. (WS-A `ab0e8df`)
+- [x] AC-2 Daily `$20` cap still enforced; session+daily budgets read from `Settings`. (WS-A)
+- [x] AC-3 Cache TTLs env-driven via `Settings`. (WS-B `cf8b10a`)
+- [x] AC-4 Rate limits applied to all chat + search routes; 429 on breach; anon still works. (WS-C `b0637ee`)
+- [x] AC-5 Request body size + message length capped (413 / 422). *(foundation `a9dfa49`)*
+- [x] AC-6 `render.yaml` present and port-agnostic; no live deploy. (WS-E `b26b463`)
+- [x] AC-7 Full test suite green; new tests for cost/cache/rate-limit. **171/171 on integration branch.**
+
+> Integration note (Opus, 2026-06-11): all four workstream branches merged cleanly into
+> `feature/5-9-cost-deploy-hardening`; combined suite **171 passed**. WS-C removed
+> `from __future__ import annotations` from the route files (slowapi + PEP-563 lazy
+> annotations break FastAPI signature resolution) — verified app imports clean post-merge.
+> Minor follow-up: an unawaited-mock `RuntimeWarning` in `tests/api/test_rate_limit.py`
+> (non-blocking). No PR opened, no merge to master, no deploy — per run guardrails.
+
+---
+
+## Deploy notes (Render)
+
+**NO live deploy was performed. This section is config documentation only.**
+
+### Blueprint file
+`render.yaml` at the repo root defines a single `web` service (`findme-api`) of
+`runtime: docker`, built from `./Dockerfile`. To activate, connect this repo in the
+Render dashboard and click "Apply Blueprint" (or "New Blueprint Instance").
+
+### How PORT is honored
+Render injects a `$PORT` env var into every web service at runtime. The old
+exec-form `CMD ["uvicorn", ..., "--port", "8000"]` cannot expand shell variables,
+so it was replaced with:
+
+```
+CMD ["sh", "scripts/start.sh"]
+```
+
+`scripts/start.sh` (executable) runs:
+
+```sh
+exec uvicorn api.main:app --host 0.0.0.0 --port "${PORT:-8000}"
+```
+
+This honors Render's injected port in production and falls back to `8000`
+locally or in docker-compose.
+
+### Env vars that MUST be set as secrets in the Render dashboard
+The following are declared `sync: false` in `render.yaml` — they are never
+committed and must be entered manually in Render → Service → Environment:
+
+| Variable | Notes |
+|----------|-------|
+| `DATABASE_URL` | asyncpg URL to external Postgres+pgvector instance |
+| `DATABASE_URL_SYNC` | psycopg2 URL for Alembic CLI runs |
+| `REDIS_URL` | Render Key Value internal URL, or external Redis (Upstash etc.) |
+| `CELERY_BROKER_URL` | usually same as `REDIS_URL` |
+| `CELERY_RESULT_BACKEND` | Redis URL, db index 1 recommended |
+| `GEMINI_API_KEY` | Anthropic/Google Gemini key |
+| `JWT_SECRET` | generate with `openssl rand -hex 32` |
+| `GOOGLE_CLIENT_ID` | Google OAuth client id |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `CORS_ORIGINS` | comma-separated production frontend URL(s) |
+| `GOOGLE_MAPS_API_KEY` | optional — only needed for geocoding backfill |
+
+All other env vars in `render.yaml` have safe defaults committed in plain text
+(e.g. cost ceilings, rate limits, cache TTLs).
+
+### Postgres note
+Render's native Postgres does not include the `pgvector` extension. Use an
+external pgvector-enabled instance (Supabase, Neon, or a self-managed Render
+private service with the pgvector image). Wire `DATABASE_URL` to that instance.
+
+### Health check path
+`/api/admin/health` — requires a live DB + Redis connection. Render waits for
+this to return HTTP 200 before routing traffic to a new deploy.
+
+### Wiring Render Key Value (Redis)
+1. Create a "Key Value" service in the Render dashboard.
+2. Copy its **Internal Redis URL**.
+3. Paste it as the value of `REDIS_URL` (and `CELERY_BROKER_URL`) in the
+   findme-api service's environment secrets.
+
+---
+
+## Integration (Opus, after agents finish)
+Merge `feature/5-9-cost|cache|ratelimit|deploy` into
+`feature/5-9-cost-deploy-hardening`, resolve any overlap in route files, run the
+full suite, push. Update `sprint-status.yaml` 5.9 → review. Do NOT open PRs / merge to master / deploy.
+
+---
+
+## Review + polish round (2026-06-14)
+
+A low-effort review (mine) and a deeper adversarial review (`5-9-deep-review.md`)
+ran against PR #10. The following fixes were applied on this branch. Suite: **183 passed**.
+
+**Fixed:**
+- **Rate limiting behind a proxy (was silently broken):** `scripts/start.sh` now
+  runs uvicorn with `--proxy-headers --forwarded-allow-ips='*'`, so per-IP limits
+  and the anon cost-cap IP fallback see the real client IP, not Render's proxy IP.
+- **CORS spec violation:** `api/main.py` now sets `allow_credentials=True` only when
+  explicit origins are configured; wildcard `*` no longer ships with credentials
+  (browsers reject that combo, breaking JWT/OAuth fetches).
+- **Anon cost-cap bypass:** new `cost_guard.cost_cap_key(session_id, client_host)` —
+  anonymous callers without `X-Session-ID` are now capped per-IP instead of being
+  uncapped. Wired into both v2 routes; the cap check runs unconditionally.
+- **Body-size limit too tight:** `max_request_body_bytes` 256 KiB → **512 KiB**
+  (a legit 50-msg Hebrew history can approach ~300 KB and was being 413'd).
+  Updated in Settings, `.env.example`, `render.yaml`.
+- **Rate-limit string validation:** `Settings` now `field_validator`s
+  `chat_rate_limit`/`search_rate_limit` so a malformed value fails at startup,
+  not on every request.
+- **Health check cold-start:** `render.yaml` healthCheckPath → `/health`
+  (dependency-free) so a deploy doesn't fail the gate before the DB is reachable.
+- **Minor:** `voucher_network` max_length cap; removed a duplicate import and a
+  dead un-awaited-AsyncMock line in tests (cleared the `RuntimeWarning`); the v2
+  stream redis test mock now returns `None` from GET (a bare AsyncMock float()s to
+  1.0 and falsely tripped the 0.50 session cap).
+
+**AC-2 correction:** budgets are read from **env vars** (`DAILY_COST_BUDGET_USD` /
+`PER_SESSION_COST_BUDGET_USD`) in `cost_guard`, not from `Settings` — deliberate, so
+tests can monkeypatch env without invalidating the `get_settings` lru_cache. The
+`Settings` fields mirror the same env vars (and `render.yaml` sets them), so the
+configured values still take effect; the earlier "read from Settings" wording was
+inaccurate.
+
+**Deferred (documented, not fixed — see `deferred-work.md`):**
+- **TOCTOU on the cost cap:** concurrent turns in one session can both pass the gate
+  before either registers cost. Acceptable under the fail-open design; revisit with
+  an atomic check-and-increment if abuse appears.
+- **Streaming partial-cost on error:** if `run_agent` raises mid-stream, the early
+  return skips `register_session_cost`, so partial LLM spend goes unrecorded.
+- **Chunked-body bypass:** `BodySizeLimitMiddleware` only checks `Content-Length`;
+  a chunked request with no length header isn't counted (uvicorn framing is the
+  backstop). The realistic large-JSON-POST attack always sends Content-Length.

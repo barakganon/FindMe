@@ -12,7 +12,6 @@ Flow:
     6. Return SearchResponse.
 """
 
-from __future__ import annotations
 
 import json
 import logging
@@ -28,12 +27,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from api.dependencies import limiter
+from api.dependencies import get_ai_client, get_db, get_redis, get_settings, limiter
 
 from pydantic import BaseModel
 
 from api.cache import get_search_cache, set_search_cache
-from api.dependencies import get_ai_client, get_db, get_redis, get_settings
 from api.schemas import (
     ProductResult,
     QueryProduct,
@@ -175,6 +173,7 @@ def _distance_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 
 
 @router.post("/search", response_model=SearchResponse)
+@limiter.limit(get_settings().search_rate_limit)
 async def search_products(
     request: Request,
     body: ExtendedSearchRequest,

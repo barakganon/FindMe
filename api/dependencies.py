@@ -12,8 +12,10 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import AsyncGenerator
 
+import re
+
 from openai import AsyncOpenAI
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from redis.asyncio import Redis
 from redis.asyncio import from_url as redis_from_url
@@ -56,6 +58,47 @@ class Settings(BaseSettings):
     # Runtime environment
     app_env: str = "development"
     log_level: str = "INFO"
+
+    # --- 5.9 cost + deploy hardening -------------------------------------
+    # Cost guard. Per-turn cap lives in run_agent(); these are the higher-level
+    # session and daily ceilings enforced in the v2 chat route / cost_guard.
+    per_session_cost_budget_usd: float = 0.50
+    daily_cost_budget_usd: float = 20.0
+
+    # Cache TTLs (seconds). Previously hardcoded in api/cache.py; now env-driven.
+    search_cache_ttl: int = 300
+    intent_cache_ttl: int = 120
+
+    # Rate limits (slowapi syntax, e.g. "20/minute"). Applied per-route.
+    chat_rate_limit: str = "20/minute"
+    search_rate_limit: str = "60/minute"
+
+    # Abuse surface caps. Enforced via Pydantic field constraints + middleware.
+    max_message_length: int = 2000
+    max_history_items: int = 50
+    # 512 KiB. A legitimate max payload (50 history msgs × 2000 Hebrew chars, up
+    # to ~3 bytes/char UTF-8, + JSON overhead) can approach ~300 KB, so 256 KiB
+    # was too tight and would 413 valid requests.
+    max_request_body_bytes: int = 524_288  # 512 KiB
+
+    # Port — Render injects PORT dynamically; default 8000 for local/dev.
+    port: int = 8000
+
+    @field_validator("chat_rate_limit", "search_rate_limit")
+    @classmethod
+    def _validate_rate_limit(cls, v: str) -> str:
+        """Fail fast at startup on a malformed slowapi limit string.
+
+        Without this, a typo'd CHAT_RATE_LIMIT/SEARCH_RATE_LIMIT passes startup
+        and raises ValueError on every request once slowapi tries to parse it.
+        Accepts e.g. "20/minute" or "20 per minute" for second|minute|hour|day.
+        """
+        pattern = r"^\d+\s*(?:/|\s+per\s+)\s*(second|minute|hour|day)s?$"
+        if not re.match(pattern, v.strip(), re.IGNORECASE):
+            raise ValueError(
+                f"invalid rate-limit string {v!r}; expected e.g. '20/minute'"
+            )
+        return v
 
 
 @lru_cache(maxsize=1)

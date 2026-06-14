@@ -43,7 +43,12 @@ def _override_ai():
 
 
 async def _override_redis():
-    return AsyncMock()
+    # Behave like a real empty Redis: GET on an absent key returns None (cost 0.0).
+    # A bare AsyncMock().get() returns a mock that float()s to 1.0, which would
+    # falsely trip the per-session cost cap (budget 0.50).
+    m = AsyncMock()
+    m.get = AsyncMock(return_value=None)
+    return m
 
 
 def _parse_sse(text: str) -> list[dict]:
@@ -609,3 +614,36 @@ async def test_stream_final_includes_voucher_network(override_deps):
     events = _parse_sse(resp.text)
     final = next(e for e in events if e["event"] == "final")
     assert final["data"]["voucher_network"] == "buyme"
+
+
+@pytest.mark.anyio
+async def test_stream_blocked_by_session_budget(monkeypatch, override_deps):
+    """When session cost exceeds per-session budget, stream returns 503 with Retry-After."""
+    # Set a tiny session budget so any session cost trips it
+    monkeypatch.setenv("PER_SESSION_COST_BUDGET_USD", "0.001")
+
+    session_id = "test-session-over-budget"
+
+    async def _redis_session_over():
+        m = AsyncMock()
+        # daily key returns 0.0 (fine); session key returns 999.0 (over budget)
+        async def _get(key: str):
+            if "session_cost" in key:
+                return "999.0"
+            return "0.0"
+        m.get = AsyncMock(side_effect=_get)
+        return m
+
+    app.dependency_overrides[get_redis] = _redis_session_over
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/chat/v2/stream",
+            json={"message": "x", "history": []},
+            headers={"X-Session-ID": session_id},
+        )
+    assert resp.status_code == 503
+    assert "Retry-After" in resp.headers
+    body = resp.json()
+    assert body["detail"]["fallback"] == "/api/chat"
+    assert "session" in body["detail"]["error"]

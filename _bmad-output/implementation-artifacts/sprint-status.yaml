@@ -109,6 +109,6 @@ development_status:
   5-5-streaming-and-soft-launch: done            # W5 backend — SSE + cost guard + allowlist done 2026-05-16. Frontend rebuild + Render deploy deferred to follow-up.
   5-6-prompt-iteration: done                     # W6 — done 2026-05-17, brand_top_result +49pts, intent 91.8%, overall 63.6%→69.4%
   5-7-ui-polish-and-repair: review               # W7 — results tray, memory chips, repair (manual validation pending)
-  5-8-test-rewrite: review                       # W8 — 40+ tests around tools (47 new, 188/188 passing)
-  5-9-cost-and-deploy-hardening: backlog         # W9 — caching, rate limits, prod deploy
+  5-8-test-rewrite: done                         # W8 — 47 new tool/stream tests + code-review patches; merged PR #9 (2026-06-14)
+  5-9-cost-and-deploy-hardening: done            # W9 — cost cap, cache TTLs, rate limits, body guard, Render blueprint + review polish; merged PR #10 (2026-06-14). No live deploy yet.
   epic-5-retrospective: optional

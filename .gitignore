@@ -31,3 +31,7 @@ db/migrations/versions/*.pyc
 # Logs
 *.log
 nohup.out
+
+# Local git worktrees (Phase B parallel agents)
+.worktrees/
+.claude/worktrees/

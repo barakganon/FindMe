@@ -37,3 +37,9 @@
 - `redis_mock` fixture defined but never referenced in this diff (`tests/conftest.py:38-50`) — per AC-7 spec it's available for future use
 - `make_db_result.scalar_one_or_none()` returns `items[0]` instead of raising on multiple/zero (`tests/api/conftest.py:33-41`) — future tests may want SQLAlchemy-accurate semantics
 - Edge cases worth defensive future-proofing: `max_price=0.0` boundary, whitespace-only brand, datetime/Decimal serialization in recall_history, UUID-vs-str dedupe, preference duplicate keys, `display_name=None`. Documented as "consider adding" rather than ship-blockers.
+
+## Deferred from: Story 5.9 review + polish (2026-06-14)
+
+- **Cost-cap TOCTOU.** `is_session_over_budget` is read-then-act; two concurrent turns in one session can both pass the gate before either `register_session_cost`. [api/routes/chat_v2.py, chat_v2_stream.py]. *Acceptable under the fail-open design; revisit with an atomic Redis check-and-increment (Lua/`INCRBYFLOAT`-then-compare) if real abuse appears.*
+- **Streaming partial-cost on error.** If `run_agent` raises mid-stream, the early return skips `register_session_cost`, so partial LLM spend for that turn is never counted toward the session/daily ceilings. [api/routes/chat_v2_stream.py]. *Deferred — needs the loop to surface partial cost on exception before it can be registered.*
+- **Chunked-body bypass of the size guard.** `BodySizeLimitMiddleware` checks only `Content-Length`; a chunked request with no length header isn't byte-counted. [api/middleware.py]. *uvicorn framing limits are the backstop; the realistic large-JSON-POST attack always sends Content-Length. Revisit only if chunked abuse is observed.*

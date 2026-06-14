@@ -22,7 +22,7 @@ from api.cache import (
     _intent_key,
     _search_key,
 )
-from api.dependencies import get_db, get_redis
+from api.dependencies import get_db, get_redis, get_settings, Settings
 from api.main import app
 from api.schemas import ParsedIntent
 
@@ -37,18 +37,25 @@ class FakeRedis:
 
     def __init__(self):
         self._store: dict[str, str] = {}
+        self._ttls: dict[str, int] = {}
 
     async def get(self, key: str) -> str | None:
         return self._store.get(key)
 
     async def setex(self, key: str, ttl: int, value: str) -> None:
         self._store[key] = value
+        self._ttls[key] = ttl
 
     async def ping(self) -> bool:
         return True
 
     def clear(self):
         self._store.clear()
+        self._ttls.clear()
+
+    def last_ttl(self, key: str) -> int | None:
+        """Return the TTL used the last time setex was called for this key."""
+        return self._ttls.get(key)
 
 
 # ---------------------------------------------------------------------------
@@ -244,3 +251,70 @@ async def test_intent_cache_miss_calls_llm() -> None:
     cached = await get_intent_cache(redis, message)
     assert cached is not None
     assert cached["intent"] == "product_search"
+
+
+# ---------------------------------------------------------------------------
+# TTL-from-Settings tests (Workstream B — env-driven cache TTLs)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_set_search_cache_uses_settings_ttl() -> None:
+    """set_search_cache with no explicit ttl uses Settings.search_cache_ttl."""
+    redis = FakeRedis()
+    query = "כרטיס מתנה"
+    filters: dict = {}
+    payload = {"results": [], "total": 0}
+
+    mock_settings = Settings(search_cache_ttl=555, intent_cache_ttl=111)
+    with patch("api.cache.get_settings", return_value=mock_settings):
+        await set_search_cache(redis, query, filters, payload)
+
+    key = _search_key(query, filters)
+    assert redis.last_ttl(key) == 555
+
+
+@pytest.mark.anyio
+async def test_set_search_cache_explicit_ttl_overrides_settings() -> None:
+    """An explicit ttl kwarg takes precedence over the Settings value."""
+    redis = FakeRedis()
+    query = "כרטיס מתנה"
+    filters: dict = {}
+    payload = {"results": [], "total": 0}
+
+    mock_settings = Settings(search_cache_ttl=555, intent_cache_ttl=111)
+    with patch("api.cache.get_settings", return_value=mock_settings):
+        await set_search_cache(redis, query, filters, payload, ttl=42)
+
+    key = _search_key(query, filters)
+    assert redis.last_ttl(key) == 42
+
+
+@pytest.mark.anyio
+async def test_set_intent_cache_uses_settings_ttl() -> None:
+    """set_intent_cache with no explicit ttl uses Settings.intent_cache_ttl."""
+    redis = FakeRedis()
+    message = "מסעדות בירושלים"
+    payload = {"intent": "store_search", "city": "ירושלים"}
+
+    mock_settings = Settings(search_cache_ttl=555, intent_cache_ttl=777)
+    with patch("api.cache.get_settings", return_value=mock_settings):
+        await set_intent_cache(redis, message, payload)
+
+    key = _intent_key(message)
+    assert redis.last_ttl(key) == 777
+
+
+@pytest.mark.anyio
+async def test_set_intent_cache_explicit_ttl_overrides_settings() -> None:
+    """An explicit ttl kwarg takes precedence over the Settings value."""
+    redis = FakeRedis()
+    message = "מסעדות בירושלים"
+    payload = {"intent": "store_search", "city": "ירושלים"}
+
+    mock_settings = Settings(search_cache_ttl=555, intent_cache_ttl=777)
+    with patch("api.cache.get_settings", return_value=mock_settings):
+        await set_intent_cache(redis, message, payload, ttl=99)
+
+    key = _intent_key(message)
+    assert redis.last_ttl(key) == 99

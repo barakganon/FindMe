@@ -23,6 +23,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from api.dependencies import get_settings, limiter
+from api.middleware import BodySizeLimitMiddleware
 from api.routes import admin, auth as auth_module, chat, chat_v2, chat_v2_stream, search, stores
 from api.routes import users as users_module
 
@@ -66,6 +67,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 # ---------------------------------------------------------------------------
+# Request body-size limit (abuse-surface guard — rejects oversized bodies 413)
+# ---------------------------------------------------------------------------
+
+app.add_middleware(
+    BodySizeLimitMiddleware,
+    max_bytes=get_settings().max_request_body_bytes,
+)
+
+# ---------------------------------------------------------------------------
 # CORS middleware
 # ---------------------------------------------------------------------------
 
@@ -79,10 +89,15 @@ if _cors_origins_raw.strip() == "*":
 else:
     _allowed_origins = [origin.strip() for origin in _cors_origins_raw.split(",") if origin.strip()]
 
+# A wildcard origin (`*`) and `allow_credentials=True` together are a CORS spec
+# violation that browsers reject — credentialed fetches (JWT/OAuth) silently fail.
+# Only enable credentials when explicit origins are configured (i.e. production).
+_allow_credentials = _allowed_origins != ["*"]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
-    allow_credentials=True,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
