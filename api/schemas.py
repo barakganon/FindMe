@@ -251,7 +251,8 @@ class ChatRequest(BaseModel):
     session_context: Optional[SessionContext] = Field(
         None, description="Client-side session state (location, voucher network)"
     )
-    voucher_network: str = Field("buyme", description="Active voucher network")
+    # max_length caps an otherwise-unbounded client-supplied string.
+    voucher_network: str = Field("buyme", max_length=50, description="Active voucher network")
 
 
 class ChatResponse(BaseModel):

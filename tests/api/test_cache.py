@@ -22,7 +22,7 @@ from api.cache import (
     _intent_key,
     _search_key,
 )
-from api.dependencies import get_db, get_redis, get_settings, Settings, get_settings, Settings
+from api.dependencies import get_db, get_redis, get_settings, Settings
 from api.main import app
 from api.schemas import ParsedIntent
 

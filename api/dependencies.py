@@ -12,8 +12,10 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import AsyncGenerator
 
+import re
+
 from openai import AsyncOpenAI
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from redis.asyncio import Redis
 from redis.asyncio import from_url as redis_from_url
@@ -74,10 +76,29 @@ class Settings(BaseSettings):
     # Abuse surface caps. Enforced via Pydantic field constraints + middleware.
     max_message_length: int = 2000
     max_history_items: int = 50
-    max_request_body_bytes: int = 262_144  # 256 KiB
+    # 512 KiB. A legitimate max payload (50 history msgs × 2000 Hebrew chars, up
+    # to ~3 bytes/char UTF-8, + JSON overhead) can approach ~300 KB, so 256 KiB
+    # was too tight and would 413 valid requests.
+    max_request_body_bytes: int = 524_288  # 512 KiB
 
     # Port — Render injects PORT dynamically; default 8000 for local/dev.
     port: int = 8000
+
+    @field_validator("chat_rate_limit", "search_rate_limit")
+    @classmethod
+    def _validate_rate_limit(cls, v: str) -> str:
+        """Fail fast at startup on a malformed slowapi limit string.
+
+        Without this, a typo'd CHAT_RATE_LIMIT/SEARCH_RATE_LIMIT passes startup
+        and raises ValueError on every request once slowapi tries to parse it.
+        Accepts e.g. "20/minute" or "20 per minute" for second|minute|hour|day.
+        """
+        pattern = r"^\d+\s*(?:/|\s+per\s+)\s*(second|minute|hour|day)s?$"
+        if not re.match(pattern, v.strip(), re.IGNORECASE):
+            raise ValueError(
+                f"invalid rate-limit string {v!r}; expected e.g. '20/minute'"
+            )
+        return v
 
 
 @lru_cache(maxsize=1)

@@ -25,7 +25,12 @@ def _override_ai():
 
 
 async def _override_redis():
-    return AsyncMock()
+    # Behave like a real empty Redis: GET on an absent key returns None (cost 0.0).
+    # A bare AsyncMock().get() returns a mock that float()s to 1.0, which would
+    # falsely trip the per-session cost cap (budget 0.50).
+    m = AsyncMock()
+    m.get = AsyncMock(return_value=None)
+    return m
 
 
 def _parse_sse(text: str) -> list[dict]:

@@ -21,7 +21,10 @@ services:
     plan: standard                 # standard = 1 CPU / 2 GB RAM; bump to pro as needed
     region: frankfurt              # eu-central-1 — closest to Israel
     branch: master                 # production branch
-    healthCheckPath: /api/admin/health
+    # /health is dependency-free (no DB/Redis) so a cold deploy doesn't fail the
+    # health check before the DB is reachable. Use /api/admin/health for deeper
+    # readiness checks from monitoring, not as the deploy gate.
+    healthCheckPath: /health
 
     envVars:
       # ── Application ──────────────────────────────────────────────────────
@@ -93,7 +96,7 @@ services:
 
       # ── Abuse-surface caps ────────────────────────────────────────────────
       - key: MAX_REQUEST_BODY_BYTES
-        value: "262144"   # 256 KiB
+        value: "524288"   # 512 KiB
 
       - key: MAX_MESSAGE_LENGTH
         value: "2000"

@@ -44,6 +44,21 @@ def _session_key(session_id: str) -> str:
     return f"findme:agent:session_cost_usd:{session_id}"
 
 
+def cost_cap_key(session_id: Optional[str], client_host: Optional[str]) -> str:
+    """Key the per-session cost cap should accumulate against.
+
+    Logged-in / header-bearing clients use their stable ``session_id``. Anonymous
+    clients that omit ``X-Session-ID`` would otherwise have NO per-session ceiling
+    (only the daily + per-turn caps), so we fall back to a per-IP bucket. Requires
+    uvicorn ``--proxy-headers`` so ``client_host`` is the real IP behind Render's
+    proxy, not the shared proxy IP. Falls back to a single shared bucket only when
+    the IP is also unknown — still better than no cap.
+    """
+    if session_id:
+        return session_id
+    return f"ip:{client_host or 'unknown'}"
+
+
 def daily_budget_usd() -> float:
     """Configured daily budget. Override via DAILY_COST_BUDGET_USD env var.
 

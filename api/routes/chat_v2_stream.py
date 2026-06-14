@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from api.agent.cost_guard import (
+    cost_cap_key,
     daily_budget_usd,
     is_over_budget,
     is_session_over_budget,
@@ -96,9 +97,11 @@ async def chat_v2_stream(
     started = time.monotonic()
     session_id = derive_session_id(current_user, x_session_id)
 
-    # Per-session cost cap (W9): circuit-break before run_agent if this session
-    # has already spent its budget. Uses same 503+fallback shape as daily guard.
-    if session_id and await is_session_over_budget(redis, session_id, session_budget_usd()):
+    # Per-session cost cap (W9): circuit-break before run_agent if this caller has
+    # already spent its budget. Anonymous callers without X-Session-ID are capped
+    # per-IP (cost_cap_key) so they can't bypass the ceiling by omitting the header.
+    _cap_key = cost_cap_key(session_id, request.client.host if request.client else None)
+    if await is_session_over_budget(redis, _cap_key, session_budget_usd()):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
@@ -175,7 +178,7 @@ async def chat_v2_stream(
         except Exception:
             pass
         try:
-            await register_session_cost(redis, session_id, result.total_cost_usd)
+            await register_session_cost(redis, _cap_key, result.total_cost_usd)
         except Exception:
             pass
 

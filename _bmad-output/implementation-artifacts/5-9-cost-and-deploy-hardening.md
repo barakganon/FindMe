@@ -169,3 +169,50 @@ this to return HTTP 200 before routing traffic to a new deploy.
 Merge `feature/5-9-cost|cache|ratelimit|deploy` into
 `feature/5-9-cost-deploy-hardening`, resolve any overlap in route files, run the
 full suite, push. Update `sprint-status.yaml` 5.9 → review. Do NOT open PRs / merge to master / deploy.
+
+---
+
+## Review + polish round (2026-06-14)
+
+A low-effort review (mine) and a deeper adversarial review (`5-9-deep-review.md`)
+ran against PR #10. The following fixes were applied on this branch. Suite: **183 passed**.
+
+**Fixed:**
+- **Rate limiting behind a proxy (was silently broken):** `scripts/start.sh` now
+  runs uvicorn with `--proxy-headers --forwarded-allow-ips='*'`, so per-IP limits
+  and the anon cost-cap IP fallback see the real client IP, not Render's proxy IP.
+- **CORS spec violation:** `api/main.py` now sets `allow_credentials=True` only when
+  explicit origins are configured; wildcard `*` no longer ships with credentials
+  (browsers reject that combo, breaking JWT/OAuth fetches).
+- **Anon cost-cap bypass:** new `cost_guard.cost_cap_key(session_id, client_host)` —
+  anonymous callers without `X-Session-ID` are now capped per-IP instead of being
+  uncapped. Wired into both v2 routes; the cap check runs unconditionally.
+- **Body-size limit too tight:** `max_request_body_bytes` 256 KiB → **512 KiB**
+  (a legit 50-msg Hebrew history can approach ~300 KB and was being 413'd).
+  Updated in Settings, `.env.example`, `render.yaml`.
+- **Rate-limit string validation:** `Settings` now `field_validator`s
+  `chat_rate_limit`/`search_rate_limit` so a malformed value fails at startup,
+  not on every request.
+- **Health check cold-start:** `render.yaml` healthCheckPath → `/health`
+  (dependency-free) so a deploy doesn't fail the gate before the DB is reachable.
+- **Minor:** `voucher_network` max_length cap; removed a duplicate import and a
+  dead un-awaited-AsyncMock line in tests (cleared the `RuntimeWarning`); the v2
+  stream redis test mock now returns `None` from GET (a bare AsyncMock float()s to
+  1.0 and falsely tripped the 0.50 session cap).
+
+**AC-2 correction:** budgets are read from **env vars** (`DAILY_COST_BUDGET_USD` /
+`PER_SESSION_COST_BUDGET_USD`) in `cost_guard`, not from `Settings` — deliberate, so
+tests can monkeypatch env without invalidating the `get_settings` lru_cache. The
+`Settings` fields mirror the same env vars (and `render.yaml` sets them), so the
+configured values still take effect; the earlier "read from Settings" wording was
+inaccurate.
+
+**Deferred (documented, not fixed — see `deferred-work.md`):**
+- **TOCTOU on the cost cap:** concurrent turns in one session can both pass the gate
+  before either registers cost. Acceptable under the fail-open design; revisit with
+  an atomic check-and-increment if abuse appears.
+- **Streaming partial-cost on error:** if `run_agent` raises mid-stream, the early
+  return skips `register_session_cost`, so partial LLM spend goes unrecorded.
+- **Chunked-body bypass:** `BodySizeLimitMiddleware` only checks `Content-Length`;
+  a chunked request with no length header isn't counted (uvicorn framing is the
+  backstop). The realistic large-JSON-POST attack always sends Content-Length.

@@ -136,9 +136,6 @@ async def test_chat_under_limit_succeeds(override_deps):
          patch("api.routes.chat._compose_response") as mock_compose, \
          patch("api.routes.chat._run_product_search") as mock_search:
         from api.schemas import ParsedIntent
-        mock_parse.return_value = AsyncMock(return_value=ParsedIntent(
-            intent="clarify", voucher_network="buyme"
-        ))()
         mock_parse.return_value = ParsedIntent(intent="clarify", voucher_network="buyme")
         mock_compose.return_value = "שאלה?"
         mock_search.return_value = []
@@ -260,3 +257,27 @@ async def test_chat_returns_429_when_limit_exceeded(override_deps, tight_limit_o
     assert r1.status_code != 429, f"First request should not be rate-limited, got {r1.status_code}"
     # Second request should be rate-limited
     assert r2.status_code == 429, f"Second request should be rate-limited (429), got {r2.status_code}"
+
+
+# ---------------------------------------------------------------------------
+# Part 4: malformed rate-limit strings fail fast at Settings construction (W9 polish)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["20 minute", "twenty/minute", "20/", "/minute", ""])
+def test_invalid_rate_limit_string_rejected_at_startup(bad):
+    """A typo'd CHAT/SEARCH rate-limit string must raise at Settings build time,
+    not silently pass startup and ValueError on every request."""
+    from pydantic import ValidationError
+    from api.dependencies import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(chat_rate_limit=bad)
+
+
+@pytest.mark.parametrize("good", ["20/minute", "5/second", "100 per hour", "1/day"])
+def test_valid_rate_limit_strings_accepted(good):
+    """Well-formed slowapi limit strings pass validation."""
+    from api.dependencies import Settings
+
+    assert Settings(search_rate_limit=good).search_rate_limit == good

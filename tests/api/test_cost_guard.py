@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from api.agent.cost_guard import (
+    cost_cap_key,
     current_day_cost_usd,
     current_session_cost_usd,
     daily_budget_usd,
@@ -247,3 +248,23 @@ def test_session_budget_usd_from_env(monkeypatch):
     """session_budget_usd() must honour PER_SESSION_COST_BUDGET_USD env var."""
     monkeypatch.setenv("PER_SESSION_COST_BUDGET_USD", "1.00")
     assert session_budget_usd() == 1.00
+
+
+# ---------------------------------------------------------------------------
+# cost_cap_key — anon callers fall back to a per-IP bucket (W9 polish)
+# ---------------------------------------------------------------------------
+
+
+def test_cost_cap_key_uses_session_id_when_present():
+    """A stable session id is used verbatim as the cost-cap key."""
+    assert cost_cap_key("user:42", "203.0.113.5") == "user:42"
+
+
+def test_cost_cap_key_falls_back_to_ip_for_anon():
+    """Anonymous callers (no session id) are capped per-IP, not bypassed."""
+    assert cost_cap_key(None, "203.0.113.5") == "ip:203.0.113.5"
+
+
+def test_cost_cap_key_unknown_ip_still_returns_a_key():
+    """A missing IP still yields a (shared) bucket rather than disabling the cap."""
+    assert cost_cap_key(None, None) == "ip:unknown"
