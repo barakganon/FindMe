@@ -4,10 +4,11 @@ No authentication required (internal use only).
 """
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -16,6 +17,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import get_db, get_redis
+from api.agent.cost_guard import (
+    current_day_cost_usd,
+    daily_budget_usd,
+    is_over_budget,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Admin"])
 
@@ -115,4 +123,49 @@ async def health_detailed(
             "redis": {"ok": redis_ok},
         },
         "checked_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+@router.get("/admin/cost-summary")
+async def cost_summary(
+    redis: Redis = Depends(get_redis),
+) -> dict[str, Any]:
+    """Return today's cost-guard state for operator visibility.
+
+    Useful for answering "did we get close to / trip the daily budget today?".
+    Degrades gracefully when Redis is unavailable — never raises, always 200.
+
+    Note: per-session cost enumeration is intentionally omitted. Iterating over
+    all session keys would require a Redis SCAN (O(N) over the keyspace) which
+    is out of scope for a lightweight health endpoint.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    budget = daily_budget_usd()
+
+    redis_available = True
+    daily_cost: float = 0.0
+    over_budget: bool = False
+
+    try:
+        daily_cost = await current_day_cost_usd(redis)
+        over_budget = await is_over_budget(redis)
+    except Exception as exc:  # noqa: BLE001 — degrade gracefully like health endpoints
+        logger.warning("cost_summary: Redis read failed (%s) — returning degraded response", exc)
+        redis_available = False
+
+    if redis is None:
+        redis_available = False
+
+    if budget > 0:
+        pct_used = round(daily_cost / budget * 100, 2)
+    else:
+        pct_used = 0.0  # guard div-by-zero if budget is misconfigured as 0
+
+    return {
+        "date": today,
+        "daily_cost_usd": daily_cost,
+        "daily_budget_usd": budget,
+        "daily_pct_used": pct_used,
+        "daily_over_budget": over_budget,
+        "redis_available": redis_available,
     }
