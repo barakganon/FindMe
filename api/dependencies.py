@@ -123,13 +123,30 @@ _engine = None
 _async_session_factory = None
 
 
+def _normalize_async_db_url(url: str) -> str:
+    """Coerce a DATABASE_URL to the asyncpg driver scheme.
+
+    Managed hosts (Render, Heroku, etc.) inject `postgresql://` (or legacy
+    `postgres://`), but `create_async_engine` needs an async driver in the
+    scheme. Normalize so a directly-connected provider URL works without manual
+    editing. Already-async URLs (`postgresql+asyncpg://`) pass through unchanged.
+    """
+    if url.startswith("postgresql+"):
+        return url
+    if url.startswith("postgresql://"):
+        return "postgresql+asyncpg://" + url[len("postgresql://"):]
+    if url.startswith("postgres://"):
+        return "postgresql+asyncpg://" + url[len("postgres://"):]
+    return url
+
+
 def _get_session_factory() -> async_sessionmaker[AsyncSession]:
     """Lazily initialise the async engine and session factory."""
     global _engine, _async_session_factory
     if _async_session_factory is None:
         settings = get_settings()
         _engine = create_async_engine(
-            settings.database_url,
+            _normalize_async_db_url(settings.database_url),
             echo=(settings.app_env == "development"),
             pool_pre_ping=True,
         )
