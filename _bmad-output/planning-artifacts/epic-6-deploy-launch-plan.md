@@ -45,9 +45,14 @@ deploy. Epic 6 finally runs it.
 
 ## Risks / unknowns to resolve early
 
-- **pgvector hosting.** Render Postgres lacks pgvector (documented in 5.9 deploy notes).
-  6.1's first task is choosing the provider (Supabase / Neon / self-managed) and confirming
-  the 135,865-row embedded catalog imports + queries at acceptable latency.
+- **pgvector hosting — RESOLVED (2026-06-15).** The 5.9 note that "Render Postgres lacks
+  pgvector" is now **out of date**: Render added pgvector for Postgres (PG 13+) created
+  post-Feb-2026. Recommendation: use **Render native Postgres** (same-network latency, no
+  cross-provider asyncpg/pooler friction, ~$45/mo Pro-1GB). The catalog is `vector(768)`
+  (Gemini text-embedding-004) with an `ivfflat` cosine index, ~135k rows. See
+  `6-1-pgvector-provider-comparison.md`. Still verify: Frankfurt region availability for
+  Render PG, fresh-instance `max_connections`, and the installed pgvector version. This
+  lets `render.yaml` wire `DATABASE_URL` via `fromDatabase` instead of an external secret.
 - **Cold-start latency.** Render free/standard dynos sleep; first-request latency may hurt
   the "thinking…" experience. Measure in 6.1; consider a keep-warm ping in 6.4.
 - **Deploy authority.** A live deploy spends money and is outward-facing. **Not yet

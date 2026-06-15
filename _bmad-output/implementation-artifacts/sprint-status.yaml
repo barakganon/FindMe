@@ -119,10 +119,10 @@ development_status:
   # Ships the deploy-ready v2 to a small real audience + instruments it.
   # NOTE: live deploy spends money / is outward-facing — confirm authority before 6.1.
   # ─────────────────────────────────────────────────────────────────────
-  epic-6: backlog
-  6-1-render-backend-deploy: backlog             # apply render.yaml; external pgvector PG + Render KV; migrate; prod smoke test
+  epic-6: in-progress                            # safe (non-deploy) items started 2026-06-15
+  6-1-render-backend-deploy: backlog             # DEPLOY pending Barak's go-ahead. Research done 2026-06-15: Render now supports pgvector (post-Feb-2026) → use Render native PG, not an external provider. See planning-artifacts/6-1-pgvector-provider-comparison.md
   6-2-frontend-rebuild-and-deploy: backlog       # deferred W5 ChatInterface rebuild + deploy; lock CORS to prod origin
-  6-3-5-7-manual-validation-and-anon-chip-fix: backlog  # walk 5.7 checklist on prod; resolve anon 👦 ילד chip
-  6-4-monitoring-and-alerts: backlog             # UptimeRobot /health; cost-guard daily summary; error logging
+  6-3-anon-chip-decision: done                   # decision doc 2026-06-15 — anon child chip is a design gap not a bug; recommend Option B (logged-in only) now, Option A (recipient_age arg) as gated follow-up. 5.7 manual UI validation still outstanding.
+  6-4-monitoring-and-alerts: done                # GET /api/admin/cost-summary + 6 tests + monitoring runbook (2026-06-15). UptimeRobot wiring deferred to post-deploy (needs prod URL).
   6-5-soft-launch-and-first-week-analytics: backlog  # invite ~5-10 holders; run 3-turn kill gate; analytics pass
   epic-6-retrospective: optional

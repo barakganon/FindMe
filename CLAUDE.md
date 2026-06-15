@@ -13,7 +13,8 @@ Conversational search for Israeli gift-card holders. Start with BuyMe (buyme.co.
 - FastAPI `:8000`, React+TS `:5173`, Postgres+pgvector `:5432`, Redis cache
 - Migrations at **0008 (head)**. **135,865 products, 99.3% embedded**
 - Routes: `POST /search`, `POST /stores/search`, `POST /api/chat` (v1), `POST /api/chat/v2/stream` (SSE),
-  `POST /api/auth/*`, `GET/PUT /api/users/me/*`, `GET /api/admin/health[/detailed]`
+  `POST /api/auth/*`, `GET/PUT /api/users/me/*`, `GET /api/admin/health[/detailed]`,
+  `GET /api/admin/cost-summary` (daily cost-guard state)
 - JWT auth (email + Google OAuth). **Anonymous users always work** — never block them
 - Single chat screen: chips, GPS, ProfileDrawer, results tray, memory chips, SSE streaming
 - **v2 agentic loop is active** — tool-calling LLM (`api/agent/`) with session memory in Redis (2h TTL)
