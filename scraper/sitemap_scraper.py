@@ -383,9 +383,14 @@ def _extract_price_from_offers(offers: Any) -> Optional[float]:
     if price_raw is None:
         return None
     try:
-        return float(str(price_raw).replace(",", "").strip())
+        value = float(str(price_raw).replace(",", "").strip())
     except (ValueError, TypeError):
         return None
+    # Reject non-positive + the ₪999,999 "price on request" sentinel at ingest so
+    # re-scrapes don't keep re-introducing bogus prices (see data-audit-v1.md).
+    if value <= 0 or value >= 999999.0:
+        return None
+    return value
 
 
 def _extract_currency_from_offers(offers: Any) -> str:
