@@ -46,6 +46,25 @@ locally next to the DB they reverse. The scripts that produced them are in
   fix (also populates images + price-change history going forward). Operational, needs
   Celery/Playwright runtime.
 
+## 2026-06-17 — Full Shopify re-scrape (`scraper.shopify_product_scraper`)
+- Ran the full product scrape (1,201 stores; 215 Shopify catalogs refreshed, 986
+  non-Shopify skipped — those need the sitemap/Playwright scrapers).
+- **+42,207 new products, 157,774 updated.** Catalog: 135,988 → **178,201 products**;
+  199,981 store_products updated today. Pipeline confirmed healthy after ~2.5mo idle.
+- **The scrape re-introduced bogus prices** (112 sentinels + 3,599 ≤0) and ~18k new
+  uncategorized products — expected, since upsert ingests whatever the store returns.
+  Re-ran the cleanup scripts (idempotent): prices clean again (0/0); category re-backfilled
+  (null 32.6% → **5.5%**).
+- **Durable fix:** `_parse_price` in `scraper/shopify_product_scraper.py` now rejects
+  `≤0` and the `≥999,999` sentinel at ingest, so future scrapes won't re-introduce them
+  (+4 tests, `tests/test_parse_price.py`). The negative/sentinel cleanup should no longer
+  be needed post-scrape; the category re-backfill still should run after each scrape.
+
+## ⛔ New blocker after the scrape
+- **43,238 products (24.3%) now have no embedding** (the 42k newly-scraped ones). They
+  won't surface in semantic search until embedded. Embedding needs `GEMINI_API_KEY`
+  (`python -m db.embed_products`). **Handoff item.**
+
 ## Not yet done (carry-forward)
 - **Re-run scrapers** (fixes staleness + 99% missing images + future price-change tracking).
 - LLM category pass on the remaining 9,602 NULLs (needs `GEMINI_API_KEY`).

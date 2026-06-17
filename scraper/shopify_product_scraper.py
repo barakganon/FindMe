@@ -252,18 +252,28 @@ def save_raw_archive(
 # ---------------------------------------------------------------------------
 
 
+# Prices at/above this are treated as a "price on request" sentinel, not a real
+# price (e.g. ₪999,999 seen leaking from ENERGYM). See _bmad-output/data-audit-v1.md.
+_PRICE_SENTINEL = 999999.0
+
+
 def _parse_price(price_str: Any) -> Optional[float]:
     """
     Coerce a Shopify price value (typically a string like ``"129.90"``) to float.
 
-    Returns ``None`` if the value is absent or unparseable.
+    Returns ``None`` if the value is absent, unparseable, non-positive, or a
+    "price on request" sentinel — so bogus prices never enter the catalog
+    (otherwise every re-scrape re-introduces them; see data-audit-v1.md).
     """
     if price_str is None:
         return None
     try:
-        return float(price_str)
+        value = float(price_str)
     except (ValueError, TypeError):
         return None
+    if value <= 0 or value >= _PRICE_SENTINEL:
+        return None
+    return value
 
 
 def _extract_availability(variant: dict[str, Any]) -> bool:
