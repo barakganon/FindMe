@@ -35,3 +35,6 @@ nohup.out
 # Local git worktrees (Phase B parallel agents)
 .worktrees/
 .claude/worktrees/
+
+# Data-remediation reversibility dumps (large; live next to the local DB)
+_bmad-output/remediation/*.json

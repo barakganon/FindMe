@@ -99,3 +99,18 @@ The v2 ship-gate ("all P0 pass") **does not pass**: price truthfulness is ~1.3% 
 This is **Epic 3 (Data Quality Phase 2)**: 3-1 installment/price fix, 3-2 thin/empty
 categories, 3-3 store enrichment. The audit gives the order: **prices → categories →
 images/freshness.**
+
+---
+
+## ✅ Remediation applied (2026-06-17)
+
+Reversible; see `remediation/README.md` for restore commands.
+
+| Fix | Result | Tool |
+|-----|--------|------|
+| **Bogus prices** | 645 nulled (113 × ₪999,999 sentinel + 532 ≤0). Sentinel & non-positive now **0**. | `normalization/price_cleanup.py` |
+| **Missing categories** | 34,791 backfilled (keyword + store fallback). Null category **32.6% → 7.1%**. | `normalization/category_backfill.py` |
+
+**Still open:** sub-₪10 installment investigation; LLM category pass on the remaining
+9,602 NULLs (needs `GEMINI_API_KEY`); image backfill; freshness-tracking fix; re-embed
+if category feeds embedding text.
