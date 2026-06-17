@@ -108,9 +108,17 @@ Reversible; see `remediation/README.md` for restore commands.
 
 | Fix | Result | Tool |
 |-----|--------|------|
-| **Bogus prices** | 645 nulled (113 × ₪999,999 sentinel + 532 ≤0). Sentinel & non-positive now **0**. | `normalization/price_cleanup.py` |
-| **Missing categories** | 34,791 backfilled (keyword + store fallback). Null category **32.6% → 7.1%**. | `normalization/category_backfill.py` |
+| **Bogus prices** | 645 nulled (113 × ₪999,999 sentinel + 532 ≤0). Sentinel & non-positive now **0**. | `price_cleanup.py` |
+| **Missing categories** | 34,791 backfilled (keyword + store fallback). Null category **32.6% → 7.1%**. | `category_backfill.py` |
+| **Sub-₪10 outliers** | 50 nulled (same product ≥20× higher elsewhere). Cluster found to be mostly **legit** cheap items, not installments. | `price_cleanup.py --outliers` |
+| **Store city** | 20 backfilled from address. Null-city **182 → 162** (rest are addressless online stores). | `city_backfill.py` |
 
-**Still open:** sub-₪10 installment investigation; LLM category pass on the remaining
-9,602 NULLs (needs `GEMINI_API_KEY`); image backfill; freshness-tracking fix; re-embed
-if category feeds embedding text.
+**Reframed findings (not bugs / not auto-fixed):**
+- **Freshness:** `last_price_change_at` null-for-all is by design (change-only). `updated_at`
+  shows the catalog is **~2.5 months stale** — scrapers haven't run since early April.
+  Operational fix = re-run scrapers (also fixes the 99% missing images).
+- **Brand (3,386 null):** concentrated in multi-brand retailers; auto-assigning store name
+  would be wrong. Needs LLM/regex name extraction — deferred.
+
+**Still open:** re-run scrapers (staleness + images); LLM category pass on the remaining
+9,602 NULLs (needs `GEMINI_API_KEY`); brand extraction; re-embed if category feeds embedding.
