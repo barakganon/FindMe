@@ -65,6 +65,26 @@ locally next to the DB they reverse. The scripts that produced them are in
   won't surface in semantic search until embedded. Embedding needs `GEMINI_API_KEY`
   (`python -m db.embed_products`). **Handoff item.**
 
+## 2026-06-17 — Non-Shopify scrape attempt: DEAD END with current tooling
+Tried to refresh the **986 non-Shopify `skipped` stores**. Stopped after diagnosis — it
+was producing ~0 products while making thousands of requests at partner sites:
+- **Sitemap + JSON-LD** (`scraper.sitemap_scraper`): ran ~17 stores. Every one returned
+  `pages_with_json_ld=0` — even CHEZ VIVIE (2,000 pages fetched → 0 products) and
+  IT MOMZ (589 → 0). The scraper's own HTTP 200 responses contain no JSON-LD Product
+  schema. At ~1 store/min this would have taken **~16 hours for ~0 products**. Killed.
+- **WooCommerce Store API** (`/wp-json/wc/store/products`): `403` (bot-protected, e.g.
+  Cloudflare) or `404` (not exposed) on the stores tested.
+- **Direct page fetch**: `403` bot-challenge.
+
+**Conclusion:** these stores are bot-protected and/or expose no machine-readable product
+data — they cannot be reliably product-scraped with the current sitemap/Woo/JSON-LD
+strategies. **Recommendation:** treat them as *store-only* listings (no product catalog)
+for now; a per-store custom scraper or a paid scraping/anti-bot service would be required
+to extract their products. Do NOT blindly run the Playwright `per_store_scraper` across
+all 986 — it is far heavier and headless browsers are typically blocked by the same
+anti-bot protection. (Code hardening from this session — the price ingest-guards in both
+scrapers — still stands and is valuable for the Shopify path.)
+
 ## Not yet done (carry-forward)
 - **Re-run scrapers** (fixes staleness + 99% missing images + future price-change tracking).
 - LLM category pass on the remaining 9,602 NULLs (needs `GEMINI_API_KEY`).
