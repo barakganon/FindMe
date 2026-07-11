@@ -742,3 +742,84 @@ def test_rerank_by_brand_noop_when_results_empty():
     from api.agent.tools.search_products import _rerank_by_brand
 
     assert _rerank_by_brand([], "Sony") == []
+
+
+# ---------------------------------------------------------------------------
+# Client-disconnect cancellation (security audit MED #3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_should_abort_stops_before_next_llm_call():
+    """When should_abort() flips True after the first tool-call round-trip,
+    the loop must not issue the second (composing) LLM call."""
+    llm = _mock_llm(
+        [
+            _mock_completion(
+                tool_calls=[
+                    _mock_tool_call("call-1", "fake_tool", {"query": "headphones", "brand": "Sony"})
+                ]
+            ),
+            _mock_completion(content="should never be reached"),
+        ]
+    )
+    abort_calls = {"n": 0}
+
+    async def should_abort():
+        abort_calls["n"] += 1
+        # False on iter 1 (let the tool call happen), True on iter 2 (abort before composing).
+        return abort_calls["n"] > 1
+
+    result = await run_agent(
+        message="אוזניות סוני",
+        history=[],
+        llm_client=llm,
+        tools=[{"type": "function", "function": {"name": "fake_tool"}}],
+        tool_registry={"fake_tool": (_FakeParams, _fake_tool_ok)},
+        tool_context={},
+        should_abort=should_abort,
+    )
+
+    assert result.terminated_by == "client_disconnected"
+    # Only the first (tool-calling) LLM round-trip happened — not the composing one.
+    assert llm.chat.completions.create.call_count == 1
+    assert len(result.tool_calls) == 1  # the first tool call still ran + was recorded
+
+
+@pytest.mark.anyio
+async def test_should_abort_true_immediately_makes_zero_llm_calls():
+    """should_abort() already True on the very first check → no LLM call at all."""
+    llm = _mock_llm([_mock_completion(content="unused")])
+
+    async def should_abort():
+        return True
+
+    result = await run_agent(
+        message="x",
+        history=[],
+        llm_client=llm,
+        tools=[],
+        tool_registry={},
+        tool_context={},
+        should_abort=should_abort,
+    )
+
+    assert result.terminated_by == "client_disconnected"
+    assert result.iterations == 0
+    assert llm.chat.completions.create.call_count == 0
+
+
+@pytest.mark.anyio
+async def test_should_abort_none_never_checked_happy_path_unaffected(monkeypatch):
+    """Default (should_abort=None) — behavior identical to before this change."""
+    llm = _mock_llm([_mock_completion(content="שלום!")])
+    result = await run_agent(
+        message="היי",
+        history=[],
+        llm_client=llm,
+        tools=[],
+        tool_registry={},
+        tool_context={},
+    )
+    assert result.terminated_by == "content"
+    assert result.message == "שלום!"

@@ -139,6 +139,7 @@ async def chat_v2_stream(
                 tools=TOOL_SPECS,
                 tool_registry=TOOLS,
                 tool_context=tool_context,
+                should_abort=request.is_disconnected,
             )
         except Exception as exc:  # noqa: BLE001 — surface to client
             logger.exception("chat_v2_stream: run_agent failed")
