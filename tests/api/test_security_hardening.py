@@ -121,7 +121,7 @@ def test_prod_wildcard_cors_raises() -> None:
     full_env = dict(os.environ)
     full_env["APP_ENV"] = "production"
     full_env["JWT_SECRET"] = "a-sufficiently-long-random-prod-secret"
-    full_env.pop("CORS_ORIGINS", None)  # unset → defaults to "*"
+    full_env["CORS_ORIGINS"] = "*"  # explicit wildcard (don't rely on default — a local .env may set origins)
     result = subprocess.run(
         [_PY, "-c", "import api.main"],
         env=full_env,
