@@ -37,7 +37,7 @@ async def health(
     redis: Redis = Depends(get_redis),
 ) -> dict[str, Any]:
     # DB stats & latency
-    start = datetime.utcnow()
+    start = datetime.now(timezone.utc)
     result = await db.execute(text("""
         SELECT
             (SELECT COUNT(*) FROM products) AS products_total,
@@ -46,16 +46,16 @@ async def health(
             (SELECT COUNT(*) FROM stores WHERE lat IS NOT NULL) AS stores_geocoded
     """))
     row = result.fetchone()
-    db_latency = (datetime.utcnow() - start).total_seconds() * 1000
+    db_latency = (datetime.now(timezone.utc) - start).total_seconds() * 1000
 
     # Redis health & latency
-    start = datetime.utcnow()
+    start = datetime.now(timezone.utc)
     try:
         await redis.ping()
         redis_status = "ok"
     except Exception:
         redis_status = "unavailable"
-    redis_latency = (datetime.utcnow() - start).total_seconds() * 1000
+    redis_latency = (datetime.now(timezone.utc) - start).total_seconds() * 1000
 
     # Last 5 scrape runs
     runs_result = await db.execute(text("""
@@ -88,7 +88,7 @@ async def health(
         "stores_total": row[2] or 0,
         "stores_geocoded": row[3] or 0,
         "recent_scrape_runs": runs,
-        "checked_at": datetime.utcnow().isoformat() + "Z",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -122,7 +122,7 @@ async def health_detailed(
             "database": {"ok": db_ok},
             "redis": {"ok": redis_ok},
         },
-        "checked_at": datetime.utcnow().isoformat() + "Z",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
