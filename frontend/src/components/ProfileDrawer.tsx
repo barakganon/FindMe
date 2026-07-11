@@ -43,6 +43,15 @@ export default function ProfileDrawer({ user, onClose, onLogout }: Props) {
       .finally(() => setLoading(false));
   }, [user]);
 
+  // Esc closes the drawer
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
   const handleDeleteInferred = async (id: string) => {
     await deleteInferred(id).catch(() => {});
     setInferred(prev => prev.filter(a => a.id !== id));
@@ -55,11 +64,17 @@ export default function ProfileDrawer({ user, onClose, onLogout }: Props) {
 
   return (
     <>
-      {/* Backdrop */}
-      <div className="fixed inset-0 bg-black/40 z-40" onClick={onClose} />
+      {/* Backdrop — decorative dismiss layer; Esc handles keyboard close */}
+      <div className="fixed inset-0 bg-black/40 z-40" onClick={onClose} aria-hidden="true" />
 
       {/* Drawer */}
-      <div className="fixed top-0 right-0 h-full w-80 max-w-full bg-white z-50 shadow-2xl flex flex-col" dir="rtl">
+      <div
+        className="fixed top-0 right-0 h-full w-80 max-w-full bg-white z-50 shadow-2xl flex flex-col"
+        dir="rtl"
+        role="dialog"
+        aria-modal="true"
+        aria-label="פרופיל משתמש"
+      >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-gray-100">
           <div className="flex items-center gap-3">
@@ -75,7 +90,7 @@ export default function ProfileDrawer({ user, onClose, onLogout }: Props) {
             {user && (
               <button onClick={onLogout} className="text-xs text-red-500 hover:underline">התנתק</button>
             )}
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none" aria-label="סגור">✕</button>
           </div>
         </div>
 
@@ -136,12 +151,14 @@ export default function ProfileDrawer({ user, onClose, onLogout }: Props) {
                           onClick={() => handleConfirmInferred(attr.id)}
                           className="text-green-500 text-xs hover:underline"
                           title="אשר"
+                          aria-label="אשר"
                         >✓</button>
                       )}
                       <button
                         onClick={() => handleDeleteInferred(attr.id)}
                         className="text-red-400 text-xs hover:underline"
                         title="מחק"
+                        aria-label="מחק"
                       >✗</button>
                     </div>
                   </li>

@@ -534,6 +534,7 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
               currentUser ? 'bg-blue-600' : 'bg-gray-300'
             }`}
             title={currentUser ? currentUser.display_name || currentUser.email : 'התחבר'}
+            aria-label={currentUser ? `פרופיל: ${currentUser.display_name || currentUser.email}` : 'התחבר / פרופיל'}
           >
             {currentUser ? (currentUser.display_name || currentUser.email)[0].toUpperCase() : '👤'}
           </button>
@@ -702,9 +703,9 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
                     </div>
                   ) : (
                     <form onSubmit={handleRegisterSubmit} className="space-y-2">
-                      <input value={regName} onChange={e => setRegName(e.target.value)} placeholder="שם (אופציונלי)" className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-right" dir="rtl" />
-                      <input required type="email" value={regEmail} onChange={e => setRegEmail(e.target.value)} placeholder="אימייל" className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-right" dir="rtl" />
-                      <input required type="password" value={regPassword} onChange={e => setRegPassword(e.target.value)} placeholder="סיסמה" className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-right" dir="rtl" />
+                      <input value={regName} onChange={e => setRegName(e.target.value)} placeholder="שם (אופציונלי)" aria-label="שם (אופציונלי)" className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-right" dir="rtl" />
+                      <input required type="email" value={regEmail} onChange={e => setRegEmail(e.target.value)} placeholder="אימייל" aria-label="אימייל" className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-right" dir="rtl" />
+                      <input required type="password" value={regPassword} onChange={e => setRegPassword(e.target.value)} placeholder="סיסמה" aria-label="סיסמה" className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-right" dir="rtl" />
                       {regError && <p className="text-red-500 text-xs text-right">{regError}</p>}
                       <button type="submit" className="w-full py-1.5 bg-blue-600 text-white text-sm rounded-lg">הירשם</button>
                     </form>
@@ -733,7 +734,7 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
                 AND the tray already has items — signals "I'm answering, and
                 your previous results are still saved". */}
             {streamingState && (
-              <div className="flex flex-col items-start">
+              <div className="flex flex-col items-start" role="status" aria-live="polite" aria-atomic="true">
                 {tray.length > 0 && messages.length > 2 && (
                   <div className="text-xs text-gray-400 italic mb-1 px-2">
                     המשך השיחה ↑
@@ -796,6 +797,7 @@ export function ChatInterface({ sessionContext, onLocationUpdate }: Props) {
                 ref={textareaRef}
                 dir="rtl"
                 rows={1}
+                aria-label="הודעה לצ'אט"
                 placeholder="שאל אותי על BuyMe..."
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
@@ -872,6 +874,8 @@ function TrayPanel({ items, onClear, mobileOpen, onMobileToggle }: TrayPanelProp
       <div className="flex items-center justify-between px-3 py-2 border-b border-gray-100 shrink-0">
         <button
           className="text-sm font-medium text-gray-700 flex items-center gap-1 md:cursor-default"
+          aria-expanded={mobileOpen}
+          aria-controls="tray-items-panel"
           // Desktop: tray is always visible — match-media check prevents the
           // click from polluting localStorage.findme_tray_open. The button
           // remains semantically a button for screen-reader consistency.
@@ -892,7 +896,7 @@ function TrayPanel({ items, onClear, mobileOpen, onMobileToggle }: TrayPanelProp
       </div>
 
       {/* Items — always shown on desktop; mobile respects mobileOpen */}
-      <div className={`${mobileOpen ? 'block' : 'hidden'} md:block flex-1 overflow-y-auto px-3 py-3 space-y-3`}>
+      <div id="tray-items-panel" className={`${mobileOpen ? 'block' : 'hidden'} md:block flex-1 overflow-y-auto px-3 py-3 space-y-3`}>
         {count === 0 ? (
           <p className="text-xs text-gray-400 italic text-center mt-4">
             אין עדיין מועדפים — חיפושים יישמרו כאן
