@@ -647,3 +647,27 @@ async def test_stream_blocked_by_session_budget(monkeypatch, override_deps):
     body = resp.json()
     assert body["detail"]["fallback"] == "/api/chat"
     assert "session" in body["detail"]["error"]
+
+
+@pytest.mark.anyio
+async def test_stream_passes_request_is_disconnected_as_should_abort(monkeypatch, override_deps):
+    """chat_v2_stream must thread Request.is_disconnected into run_agent's
+    should_abort= so the agent loop can stop early on client disconnect
+    (security audit MED #3)."""
+    fake_result = _make_agent_result()
+    captured_kwargs: dict = {}
+
+    async def fake_run_agent(**kwargs):
+        captured_kwargs.update(kwargs)
+        return fake_result
+
+    with patch("api.routes.chat_v2_stream.run_agent", new=fake_run_agent):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/api/chat/v2/stream",
+                json={"message": "x", "history": []},
+            )
+
+    assert resp.status_code == 200
+    assert "should_abort" in captured_kwargs
+    assert callable(captured_kwargs["should_abort"])

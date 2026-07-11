@@ -152,6 +152,7 @@ async def run_agent(
     request_timeout_s: float = 30.0,
     cost_budget_usd: float = 0.10,
     tool_timeout_s: float = _DEFAULT_TOOL_TIMEOUT_S,
+    should_abort: Optional[Callable[[], Any]] = None,
 ) -> AgentResult:
     """
     Drive the LLM through tool-calling iterations until it returns final content
@@ -172,6 +173,11 @@ async def run_agent(
             terminated_by="cost_budget" once exceeded. Uses completion.usage
             when available, falls back to a character-count estimate otherwise.
         tool_timeout_s: per-tool-execution timeout (catches a hung tool)
+        should_abort: optional zero-arg async callable (e.g. Request.is_disconnected)
+            polled at the top of every iteration. When it returns True the loop
+            stops before the next LLM/tool call — terminated_by="client_disconnected".
+            Caller-side bookkeeping (session save, cost registration) still runs
+            against whatever was accumulated so far.
 
     Returns:
         AgentResult with the final message, accumulated results, trace, and
@@ -198,6 +204,11 @@ async def run_agent(
     messages.append({"role": "user", "content": message})
 
     for iteration in range(max_iterations):
+        if should_abort is not None and await should_abort():
+            logger.info("agent.loop: aborting at iter=%d — client disconnected", iteration + 1)
+            result.terminated_by = "client_disconnected"
+            break
+
         result.iterations = iteration + 1
 
         # Call the LLM
