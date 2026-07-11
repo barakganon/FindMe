@@ -8,21 +8,30 @@ Conversational search for Israeli gift-card holders. Start with BuyMe (buyme.co.
 
 **Value prop:** "I have a BuyMe gift card. Help me use it."
 
-## Current State (2026-06-14)
+## Current State (2026-07-11)
 
 - FastAPI `:8000`, React+TS `:5173`, Postgres+pgvector `:5432`, Redis cache
-- Migrations at **0008 (head)**. **135,865 products, 99.3% embedded**
+- Migrations at **0009 (head, agent_traces)**. **135,865 products, 99.3% embedded**
 - Routes: `POST /search`, `POST /stores/search`, `POST /api/chat` (v1), `POST /api/chat/v2/stream` (SSE),
   `POST /api/auth/*`, `GET/PUT /api/users/me/*`, `GET /api/admin/health[/detailed]`,
   `GET /api/admin/cost-summary` (daily cost-guard state)
 - JWT auth (email + Google OAuth). **Anonymous users always work** — never block them
 - Single chat screen: chips, GPS, ProfileDrawer, results tray, memory chips, SSE streaming
 - **v2 agentic loop is active** — tool-calling LLM (`api/agent/`) with session memory in Redis (2h TTL)
-- **Epic 5 merged to master** (PRs #9–#12, 2026-06-14). Test suite **254 passing**.
-  Cost guard (per-session $0.50 + daily $20), per-IP rate limits, body-size guard,
-  env-driven cache TTLs, and a Render blueprint (`render.yaml`) are all in.
-- **Not yet deployed.** `render.yaml` + `scripts/start.sh` are deploy-ready but no
-  live Render deploy has run. Frontend rebuild + deploy still pending (deferred from W5).
+- **Epic 5 merged to master** (PRs #9–#12, 2026-06-14).
+- **Epic 6 pre-launch prep merged (2026-07-11, autonomous).** Test suite **287 passing**.
+  Security hardening (prod fail-fast on missing `JWT_SECRET` / wildcard CORS; OAuth `aud`
+  pinning — all gated on `APP_ENV=production`); `render.yaml` modernized to Render native
+  pgvector via `fromDatabase`; `scripts/migrate_catalog.sh` (dry-run-safe catalog copy);
+  Dockerfile fixed (missing Chromium runtime deps `libxfixes3`/`libpango`/`libcairo2`);
+  frontend prod wiring (`.env.production`, `vite-env.d.ts`); Playwright E2E kill-gate suite
+  (`frontend/e2e/`); +16 backend tests. Cost guard, rate limits, body guard already in from Epic 5.
+- **Not yet deployed.** All go-live steps are documented + Barak-gated in
+  `_bmad-output/implementation-artifacts/6-1-LAUNCH-CHECKLIST.md` (wire DB/Redis, paste
+  GEMINI/GOOGLE secrets, `alembic upgrade head` + `CREATE EXTENSION vector`, load catalog,
+  set `CORS_ORIGINS`, smoke `/api/chat/v2/stream`). Live service exists (`findme-rau7.onrender.com`,
+  oregon/free, expires 2026-07-15); render.yaml targets frankfurt/standard — reconcile at launch.
+  Security audit: `_bmad-output/implementation-artifacts/6-security-audit.md`.
 
 **Pending data tasks (no sprint blocker):**
 - `python -m db.run_geocoding` (needs `GOOGLE_MAPS_API_KEY`)
