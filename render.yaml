@@ -5,13 +5,35 @@
 # performed by committing this file. Actual deploy requires connecting
 # this repo to the Render dashboard and clicking "Apply Blueprint".
 #
-# Managed Redis (Key Value) and Postgres are NOT declared as first-class
-# Render services here because pgvector support on Render Postgres is not
-# guaranteed — the team uses an external Postgres instance with pgvector.
-# DATABASE_URL and REDIS_URL must be wired in the Render dashboard as
-# secret env vars (sync: false). See "Deploy notes" in the story doc.
+# pgvector note (corrected 2026-07-11): Render's native Postgres now
+# supports pgvector for all databases created after 2026-02-05 (and
+# retroactively for older ones via support). We use Render's own managed
+# Postgres below instead of an external provider — see
+# _bmad-output/planning-artifacts/6-1-pgvector-provider-comparison.md.
+#
+# Intended-vs-running note: this blueprint describes the INTENDED target
+# (frankfurt region, standard plan). The currently-running findme-api
+# service is on oregon/free (see 6-1-deploy-status.md) and was created by
+# hand before this blueprint existed. Reconciling region/plan for the live
+# service is a launch-time decision for Barak, not something applying this
+# blueprint will silently change.
+
+databases:
+  - name: findme-db
+    plan: standard      # 1 GB RAM / 10 GB storage — sized for ~135k vector(768) rows + ivfflat index
+    region: frankfurt    # eu-central — closest to Israel; verify Postgres region parity before creating
+    postgresMajorVersion: "16"
+    # pgvector is enabled with: CREATE EXTENSION IF NOT EXISTS vector;
+    # (run once via scripts/migrate_catalog.sh or manually — Render does not
+    # auto-run this on database creation)
 
 services:
+  - type: keyvalue
+    name: findme-kv
+    plan: starter
+    region: frankfurt
+    ipAllowList: []      # internal-only access from findme-api
+
   - type: web
     name: findme-api
     # "docker" runtime tells Render to build from the repo's Dockerfile.
@@ -43,28 +65,35 @@ services:
       - key: CORS_ORIGINS
         sync: false   # set in Render dashboard
 
-      # ── Database (external Postgres + pgvector) ───────────────────────────
-      # Must be wired manually in the Render dashboard.
-      # Render's native Postgres does not include pgvector; use an external
-      # provider (e.g. Supabase, Neon, or a self-hosted instance on Render).
+      # ── Database (Render-managed Postgres w/ pgvector, see findme-db above) ─
       - key: DATABASE_URL
-        sync: false   # asyncpg URL: postgresql+asyncpg://user:pass@host/db
+        fromDatabase:
+          name: findme-db
+          property: connectionString   # asyncpg needs postgresql+asyncpg://; api/dependencies.py normalizes the scheme
 
       - key: DATABASE_URL_SYNC
-        sync: false   # psycopg2 URL for Alembic CLI: postgresql+psycopg2://...
+        fromDatabase:
+          name: findme-db
+          property: connectionString   # used as-is for psycopg2/Alembic CLI (postgresql:// scheme is fine there)
 
-      # ── Redis (Render Key Value or external) ─────────────────────────────
-      # Option A — Render managed Key Value: create a "Key Value" service in
-      #   the dashboard, then copy its Internal Redis URL here.
-      # Option B — external Redis (e.g. Upstash): paste the TLS URL.
+      # ── Redis (Render Key Value, see findme-kv above) ────────────────────
       - key: REDIS_URL
-        sync: false   # redis://... or rediss://...
+        fromService:
+          type: keyvalue
+          name: findme-kv
+          property: connectionString
 
       - key: CELERY_BROKER_URL
-        sync: false   # usually same as REDIS_URL
+        fromService:
+          type: keyvalue
+          name: findme-kv
+          property: connectionString
 
       - key: CELERY_RESULT_BACKEND
-        sync: false   # redis://... db index 1 recommended
+        fromService:
+          type: keyvalue
+          name: findme-kv
+          property: connectionString   # consider a distinct db index in-app if needed; Render KV doesn't expose db-index selection here
 
       # ── Gemini ────────────────────────────────────────────────────────────
       - key: GEMINI_API_KEY
