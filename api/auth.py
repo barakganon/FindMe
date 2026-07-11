@@ -4,6 +4,7 @@ get_optional_user NEVER blocks anonymous requests — critical invariant.
 """
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -18,7 +19,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import get_db
 
-SECRET_KEY = os.getenv("JWT_SECRET", "dev-secret-key-change-in-production")
+logger = logging.getLogger(__name__)
+
+_DEV_SECRET_DEFAULT = "dev-secret-key-change-in-production"
+
+_APP_ENV = os.getenv("APP_ENV", "development")
+_JWT_SECRET_ENV = os.getenv("JWT_SECRET")
+
+if _APP_ENV == "production" and (not _JWT_SECRET_ENV or _JWT_SECRET_ENV == _DEV_SECRET_DEFAULT):
+    raise RuntimeError(
+        "JWT_SECRET must be set to a strong, unique value when APP_ENV=production "
+        "(missing or using the dev default is a trivial JWT-forgery vulnerability)."
+    )
+
+if not _JWT_SECRET_ENV:
+    logger.warning(
+        "JWT_SECRET not set — falling back to insecure dev default. "
+        "This is only acceptable outside production (APP_ENV=production)."
+    )
+
+SECRET_KEY = _JWT_SECRET_ENV or _DEV_SECRET_DEFAULT
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
 

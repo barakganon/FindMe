@@ -3,6 +3,7 @@ api/routes/auth.py — Registration, login, Google OAuth, session import.
 """
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -95,6 +96,10 @@ async def google_auth(req: GoogleAuthRequest, db: AsyncSession = Depends(get_db)
             data = resp.json()
             if "error" in data:
                 raise HTTPException(status_code=401, detail="Invalid Google token")
+
+            expected_aud = os.getenv("GOOGLE_CLIENT_ID")
+            if expected_aud and data.get("aud") != expected_aud:
+                raise HTTPException(status_code=401, detail="Invalid Google token audience")
 
             google_id = data.get("sub")
             email = data.get("email")
