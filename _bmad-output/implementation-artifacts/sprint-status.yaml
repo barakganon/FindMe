@@ -32,7 +32,8 @@
 # work justifies the ceremony.
 
 generated: 2026-05-03
-last_updated: 2026-06-14
+last_updated: 2026-07-11
+# 2026-07-11 — Autonomous pre-launch prep: 6.2 frontend prod-build wiring done (.env.production/.env.example, build green); 6.1 deploy-prep done (render.yaml native pgvector via fromDatabase, scripts/migrate_catalog.sh, 6-1-LAUNCH-CHECKLIST.md). No live deploy — all go-live steps remain Barak-gated. Suite 271 passing.
 # 2026-05-29 — Story 5.7 implementation + code-review patches applied; awaits manual validation
 # 2026-05-30 — Story 5.8 spec ready for dev
 # 2026-05-30 — Story 5.8 implementation started on feature/w8-test-rewrite (stacked on W7)
@@ -121,7 +122,7 @@ development_status:
   # ─────────────────────────────────────────────────────────────────────
   epic-6: in-progress                            # safe (non-deploy) items started 2026-06-15
   6-1-render-backend-deploy: backlog             # DEPLOY pending Barak's go-ahead. Research done 2026-06-15: Render now supports pgvector (post-Feb-2026) → use Render native PG, not an external provider. See planning-artifacts/6-1-pgvector-provider-comparison.md
-  6-2-frontend-rebuild-and-deploy: backlog       # deferred W5 ChatInterface rebuild + deploy; lock CORS to prod origin
+  6-2-frontend-rebuild-and-deploy: backlog       # PREP DONE 2026-07-11 (ChatInterface already rebuilt; .env.production wiring + build green). Only live static-site deploy + CORS_ORIGINS set remain — launch-gated.
   6-3-anon-chip-decision: done                   # decision doc 2026-06-15 — anon child chip is a design gap not a bug; recommend Option B (logged-in only) now, Option A (recipient_age arg) as gated follow-up. 5.7 manual UI validation still outstanding.
   6-4-monitoring-and-alerts: done                # GET /api/admin/cost-summary + 6 tests + monitoring runbook (2026-06-15). UptimeRobot wiring deferred to post-deploy (needs prod URL).
   6-5-soft-launch-and-first-week-analytics: backlog  # invite ~5-10 holders; run 3-turn kill gate; analytics pass
