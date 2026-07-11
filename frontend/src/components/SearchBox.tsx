@@ -20,6 +20,7 @@ export function SearchBox({ onSearch, loading }: Props) {
         value={value}
         onChange={(e) => setValue(e.target.value)}
         placeholder="הדבק URL של מוצר או שם מוצר..."
+        aria-label="הדבק URL של מוצר או שם מוצר"
         className="flex-1 px-4 py-3 text-lg border-2 border-blue-300 rounded-xl focus:outline-none focus:border-blue-500 text-right"
         dir="rtl"
         disabled={loading}
