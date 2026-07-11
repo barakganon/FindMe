@@ -12,6 +12,7 @@ Configures:
 
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import FastAPI
@@ -93,6 +94,20 @@ else:
 # violation that browsers reject — credentialed fetches (JWT/OAuth) silently fail.
 # Only enable credentials when explicit origins are configured (i.e. production).
 _allow_credentials = _allowed_origins != ["*"]
+
+# Wildcard CORS in production is unsafe (any origin can hit authenticated
+# endpoints) — fail fast rather than silently running open. Non-prod keeps
+# the permissive default so local dev / tests never need CORS_ORIGINS set.
+if settings.app_env == "production" and _allowed_origins == ["*"]:
+    raise RuntimeError(
+        "CORS_ORIGINS must be set to explicit origin(s) when APP_ENV=production "
+        "(wildcard CORS is unsafe in production)."
+    )
+if _allowed_origins == ["*"]:
+    logging.warning(
+        "CORS_ORIGINS unset — defaulting to wildcard '*'. Only acceptable outside "
+        "production (APP_ENV=production)."
+    )
 
 app.add_middleware(
     CORSMiddleware,
